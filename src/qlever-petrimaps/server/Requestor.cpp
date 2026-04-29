@@ -46,7 +46,8 @@ void Requestor::request() {
   _clusterObjects.clear();
 
   RequestReader reader(_cache->getConfig().backend, _maxMemory,
-                       _geomColumns.size(), _valueFlds.size(), _rasterMetaFlds.size());
+                       _geomColumns.size(), _valueFlds.size(),
+                       _rasterMetaFlds.size());
 
   _sortColumn = "";
 
@@ -58,8 +59,9 @@ void Requestor::request() {
     // value columns come after geom columns
     wantCols.insert(wantCols.end(), _valueColumns.begin(), _valueColumns.end());
 
-		// raster columns come after value columns
-    wantCols.insert(wantCols.end(), _rasterMetaColumns.begin(), _rasterMetaColumns.end());
+    // raster columns come after value columns
+    wantCols.insert(wantCols.end(), _rasterMetaColumns.begin(),
+                    _rasterMetaColumns.end());
 
     std::string prepedGeomQuery = prepQuery(_rcfg.query, wantCols, _sortColumn);
 
@@ -115,11 +117,12 @@ void Requestor::request() {
       }
     }
 
-		std::cout << "RASTER RETRIEVAL" << std::endl;
+    std::cout << "RASTER RETRIEVAL" << std::endl;
 
     if (_rasterMetaFlds.count(geomColId)) {
-			std::cout << _rasterMetaFlds[geomColId] << std::endl;
-      _rasterMetas[geomColId] = std::move(reader._rasterMetas[_rasterMetaFlds[geomColId]]);
+      std::cout << _rasterMetaFlds[geomColId] << std::endl;
+      _rasterMetas[geomColId] =
+          std::move(reader._rasterMetas[_rasterMetaFlds[geomColId]]);
     }
 
     LOG(INFO) << "[REQUESTOR] ... done, got " << _objects[geomColId].size()
@@ -735,7 +738,7 @@ const ResObj Requestor::getNearest(size_t fieldId, util::geo::DPoint rp,
             _dynamicPoints[fieldId][nearest - _objects[fieldId].size()].second;
     }
 
-    auto points = geomPointGeoms(nearest, res);
+    auto points = geomPointGeoms(fieldId, nearest, res);
 
     return {true,
             nearest >= _objects[fieldId].size() + _dynamicPoints[fieldId].size()
@@ -804,8 +807,9 @@ const ResObj Requestor::getGeom(size_t fieldId, size_t id, double rad) const {
   }
 
   if (id >= _objects[fieldId].size()) {
-    return {true, id, fieldId, {0, 0}, {}, geomPointGeoms(id, rad / 10),
-            {},   {}};
+    return {true,   id, fieldId,
+            {0, 0}, {}, geomPointGeoms(fieldId, id, rad / 10),
+            {},     {}};
   }
 
   auto obj = _objects[fieldId][id];
@@ -1154,20 +1158,23 @@ std::pair<double, double> Requestor::getValRange() const {
 }
 
 // _____________________________________________________________________________
-std::pair<double, double> Requestor::getRasterMetas(size_t fieldId, size_t oid) const {
+std::pair<double, double> Requestor::getRasterMetas(size_t fieldId,
+                                                    size_t oid) const {
   if (oid < _objects[fieldId].size()) {
-    if (_objects[fieldId][oid].second >= _rasterMetas[fieldId].size()) return {10, 10};
-    size_t did =  _rasterMetas[fieldId][_objects[fieldId][oid].second];
-		return _cache->getRasterMeta(did);
+    if (_objects[fieldId][oid].second >= _rasterMetas[fieldId].size())
+      return {10, 10};
+    size_t did = _rasterMetas[fieldId][_objects[fieldId][oid].second];
+    return _cache->getRasterMeta(did);
   }
   if (oid >= _objects[fieldId].size()) {
     if (_dynamicPoints[fieldId][oid - _objects[fieldId].size()].second >=
         _rasterMetas[fieldId].size())
       return {10, 10};
-    size_t did = _rasterMetas[fieldId]
-                [_dynamicPoints[fieldId][oid - _objects[fieldId].size()]
-                     .second];
-		return _cache->getRasterMeta(did);
+    size_t did =
+        _rasterMetas[fieldId]
+                    [_dynamicPoints[fieldId][oid - _objects[fieldId].size()]
+                         .second];
+    return _cache->getRasterMeta(did);
   }
 
   return {10, 10};

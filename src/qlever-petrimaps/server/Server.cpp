@@ -315,6 +315,11 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
   checkMem(sizeof(unsigned char) * w * h * 4, _maxMemory);
   for (size_t i = 0; i < NUM_THREADS; i++) weights[i].resize(w * h, 0);
 
+  if (style == RASTER && parts.size() > 1) {
+    checkMem(sizeof(unsigned char) * w * h * 4, _maxMemory);
+    for (size_t i = 0; i < NUM_THREADS; i++) rasterDims[i].resize(w * h, {1, 1});
+  }
+
   // POINTS
   if (intersects(r->getPointGrid(fid).getBBox(), fbbox)) {
     LOG(INFO) << "[SERVER] Looking up display points...";
@@ -533,17 +538,32 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
   LOG(INFO) << "[SERVER] Adding points to heatmap...";
 
   if (style == RASTER) {
-    auto stamp = raster_stamp(res, rasterWidth, rasterHeight, w, h);
+    // first, aggregate possible stamp styles
+    std::map<std::pair<float, float>, heatmap_stamp_t*> stamps;
     for (size_t i = 0; i < NUM_THREADS; i++) {
       for (const auto& p : points[i]) {
-        size_t y = p / w;
-        size_t x = p - (y * w);
-        if (weights[i][p] > 0)
-          heatmap_add_weighted_point_with_stamp_no_aggreg(hm, x, y,
-                                                          weights[i][p], stamp);
+        if (stamps.count(rasterDims[i][p])) continue;
+        if (weights[i][p] == 0) continue;
+        stamps[rasterDims[i][p]] = raster_stamp(res, rasterDims[i][p].first, rasterDims[i][p].second, w, h);
       }
     }
-    heatmap_stamp_free(stamp);
+
+    // now render per stamp style
+    for (auto stamp : stamps) {
+      std::cout << stamp.first.first << "x" << stamp.first.second << std::endl;
+      for (size_t i = 0; i < NUM_THREADS; i++) {
+        for (const auto& p : points[i]) {
+          size_t y = p / w;
+          size_t x = p - (y * w);
+          if (weights[i][p] == 0) continue;
+          if (rasterDims[i][p] != stamp.first) continue;
+          heatmap_add_weighted_point_with_stamp_no_aggreg(hm, x, y,
+                                                            weights[i][p], stamp.second);
+        }
+      }
+    }
+
+    for (auto stamp : stamps) heatmap_stamp_free(stamp.second);
   } else if (style == OBJECTS) {
     auto stamp = heatmap_stamp_gen(3);
     for (size_t i = 0; i < NUM_THREADS; i++) {
@@ -1425,8 +1445,8 @@ util::http::Answer Server::handleLoadStatusReq(const Params& pars) const {
 // _____________________________________________________________________________
 void Server::drawPoint(std::vector<uint32_t>& points,
                        std::vector<double>& weights,
-                       std::vector <
-                           std::vector<std::pair<float, float>>> rasterDims,
+                       
+                           std::vector<std::pair<float, float>>& rasterDims,
                        int px, int py, int w, int h, MapStyle style,
                        double weight, double rasterW, double rasterH) const {
   if (style == RASTER) {
