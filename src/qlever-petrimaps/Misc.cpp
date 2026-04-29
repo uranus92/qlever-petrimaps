@@ -20,11 +20,11 @@ using util::LogLevel::WARN;
 // _____________________________________________________________________________
 std::vector<std::string> RequestReader::requestColumns(
     const std::string& query) {
-
   std::string resString;
 
   try {
-    resString = httpRequest(_backendUrl, queryFields(query) + "&action=tsv_export");
+    resString =
+        httpRequest(_backendUrl, queryFields(query) + "&action=tsv_export");
   } catch (const std::runtime_error& e) {
     std::stringstream ss;
     ss << "[REQUESTREADER] " << e.what();
@@ -93,6 +93,72 @@ void RequestReader::requestIds(const std::string& query) {
 
     throw std::runtime_error(ss.str());
   }
+}
+
+// _____________________________________________________________________________
+std::map<size_t, std::pair<double, double>> RequestReader::requestRasterMeta(
+    const std::string& query) {
+  CURLcode res;
+  char errbuf[CURL_ERROR_SIZE];
+  _curRasterFieldDimensions = {};
+
+  _raw.clear();
+  _raw.reserve(10000);
+
+  if (_curl) {
+    auto flds = queryFields(query);
+    petrimapsCurlSetup(_curl);
+    curl_easy_setopt(_curl, CURLOPT_URL, _backendUrl.c_str());
+    curl_easy_setopt(_curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(_curl, CURLOPT_POSTFIELDS, flds.c_str());
+    curl_easy_setopt(_curl, CURLOPT_WRITEFUNCTION,
+                     RequestReader::writeCbRasterMeta);
+    curl_easy_setopt(_curl, CURLOPT_WRITEDATA, this);
+
+    // set headers
+    struct curl_slist* headers = 0;
+    headers = curl_slist_append(headers, "Accept: application/octet-stream");
+    curl_easy_setopt(_curl, CURLOPT_HTTPHEADER, headers);
+
+    curl_easy_setopt(_curl, CURLOPT_ERRORBUFFER, errbuf);
+    res = curl_easy_perform(_curl);
+
+    long httpCode = 0;
+    curl_easy_getinfo(_curl, CURLINFO_RESPONSE_CODE, &httpCode);
+
+    curl_slist_free_all(headers);
+
+    if (httpCode != 200) {
+      std::stringstream ss;
+      ss << "QLever backend returned status code " << httpCode;
+      ss << "\n";
+      ss << _raw;
+      throw std::runtime_error(ss.str());
+    }
+
+    if (exceptionPtr) std::rethrow_exception(exceptionPtr);
+
+  } else {
+    LOG(ERROR) << "[REQUESTREADER] Failed to perform curl request.";
+    return {};
+  }
+
+  if (res != CURLE_OK) {
+    std::stringstream ss;
+    ss << "QLever backend request failed: ";
+    size_t len = strlen(errbuf);
+    if (len > 0) {
+      LOG(ERROR) << "[REQUESTREADER] " << errbuf;
+      ss << errbuf;
+    } else {
+      LOG(ERROR) << "[REQUESTREADER] " << curl_easy_strerror(res);
+      ss << curl_easy_strerror(res);
+    }
+
+    throw std::runtime_error(ss.str());
+  }
+
+  return _curRasterFieldDimensions;
 }
 
 // _____________________________________________________________________________
@@ -173,7 +239,7 @@ std::string RequestReader::queryFields(const std::string& query) const {
 
 // _____________________________________________________________________________
 size_t petrimaps::writeStringCb(void* contents, size_t size, size_t nmemb,
-                                    void* userp) {
+                                void* userp) {
   ((std::string*)userp)->append((char*)contents, size * nmemb);
   return size * nmemb;
 }
@@ -209,6 +275,71 @@ size_t RequestReader::writeCbIds(void* contents, size_t size, size_t nmemb,
 }
 
 // _____________________________________________________________________________
+size_t RequestReader::writeCbRasterMeta(void* contents, size_t size,
+                                        size_t nmemb, void* userp) {
+  size_t realsize = size * nmemb;
+  try {
+    static_cast<RequestReader*>(userp)->parseRasterMeta(
+        static_cast<const char*>(contents), realsize);
+  } catch (...) {
+    static_cast<RequestReader*>(userp)->exceptionPtr = std::current_exception();
+    return CURLE_WRITE_ERROR;
+  }
+
+  return realsize;
+}
+
+// _____________________________________________________________________________
+void RequestReader::parseRasterMeta(const char* c, size_t size) {
+  for (size_t i = 0; i < size; i++) {
+    if (_raw.size() < 10000) _raw.push_back(c[i]);
+    _curId.bytes[_curByte] = c[i];
+    _curByte = (_curByte + 1) % 8;
+
+    _curIdCol = _curIdCol % 3;
+
+    if (_curByte == 0) {
+      uint8_t type = (_curId.val & (uint64_t(15) << 60)) >> 60;
+
+      if (_curIdCol == 0) {
+        // raster dataset it
+        _curDatasetId = _curId.val;
+      } else if (_curIdCol == 1) {
+        // field width
+        if (type == 3) {
+          // 3 = double in qlever
+          uint64_t rawBits = (_curId.val << 4);
+          std::memcpy(&_curFieldWidth, &rawBits, sizeof(_curFieldWidth));
+        } else if (type == 2) {
+          // 2 = int in qlever
+          uint64_t rawBits = (_curId.val << 4) >> 4;
+          int64_t val = 0;
+          std::memcpy(&val, &rawBits, sizeof(val));
+          _curFieldWidth = val;
+        }
+      } else if (_curIdCol == 2) {
+        // field width
+        if (type == 3) {
+          // 3 = double in qlever
+          uint64_t rawBits = (_curId.val << 4);
+          std::memcpy(&_curFieldHeight, &rawBits, sizeof(_curFieldHeight));
+        } else if (type == 2) {
+          // 2 = int in qlever
+          uint64_t rawBits = (_curId.val << 4) >> 4;
+          int64_t val = 0;
+          std::memcpy(&val, &rawBits, sizeof(val));
+          _curFieldHeight = val;
+        }
+
+        _curRasterFieldDimensions[_curDatasetId] = {_curFieldWidth,
+                                                    _curFieldHeight};
+      }
+      _curIdCol += 1;
+    }
+  }
+}
+
+// _____________________________________________________________________________
 void RequestReader::parseIds(const char* c, size_t size) {
   // TODO: just a rough approximation
   checkMem(size, _maxMemory);
@@ -218,13 +349,13 @@ void RequestReader::parseIds(const char* c, size_t size) {
     _curId.bytes[_curByte] = c[i];
     _curByte = (_curByte + 1) % 8;
 
-    _curIdCol = _curIdCol % (_geomFields + _valFields);
+    _curIdCol = _curIdCol % (_geomFields + _valFields + _rasterMetaFields);
 
     if (_curByte == 0) {
       if (_curIdCol < _geomFields) {
         // geometry ID
         _ids[_curIdCol].push_back({_curId.val, _ids[_curIdCol].size()});
-      } else {
+      } else if (_curIdCol < _valFields + _geomFields){
         // value
 
         uint8_t type = (_curId.val & (uint64_t(15) << 60)) >> 60;
@@ -233,16 +364,16 @@ void RequestReader::parseIds(const char* c, size_t size) {
           uint64_t rawBits = (_curId.val << 4);
           double val = 0;
           std::memcpy(&val, &rawBits, sizeof(val));
-          size_t valCol = _curIdCol - _geomFields;
-          _vals[valCol].push_back(val);
+          _vals[_curIdCol - _geomFields].push_back(val);
         } else if (type == 2) {
           // 2 = int in qlever
           uint64_t rawBits = (_curId.val << 4) >> 4;
           int64_t val = 0;
           std::memcpy(&val, &rawBits, sizeof(val));
-          size_t valCol = _curIdCol - _geomFields;
-          _vals[valCol].push_back(val);
+          _vals[_curIdCol - _geomFields].push_back(val);
         }
+      } else {
+        _rasterMetas[_curIdCol - _geomFields - _valFields].push_back(_curId.val);
       }
       _curIdCol += 1;
     }

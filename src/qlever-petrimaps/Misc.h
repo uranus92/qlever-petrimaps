@@ -102,7 +102,8 @@ inline void petrimapsCurlSetup(CURL* curl) {
 
 size_t writeStringCb(void* contents, size_t size, size_t nmemb, void* userp);
 
-inline std::string httpRequest(const std::string& url, const std::string& postFields = "") {
+inline std::string httpRequest(const std::string& url,
+                               const std::string& postFields = "") {
   CURL* curl = curl_easy_init();
   CURLcode res;
   char errbuf[CURL_ERROR_SIZE];
@@ -149,14 +150,16 @@ inline std::string httpRequest(const std::string& url, const std::string& postFi
 
 struct RequestReader {
   explicit RequestReader(const std::string& backendUrl, size_t maxMemory,
-                         size_t geomFields, size_t valFields)
+                         size_t geomFields, size_t valFields, size_t rasterMetaFields)
       : _backendUrl(backendUrl),
         _curl(curl_easy_init()),
         _maxMemory(maxMemory),
         _geomFields(geomFields),
-        _valFields(valFields) {
+        _valFields(valFields),
+        _rasterMetaFields(rasterMetaFields) {
     _ids.resize(geomFields);
     _vals.resize(valFields);
+    _rasterMetas.resize(rasterMetaFields);
   }
   ~RequestReader() {
     if (_curl) curl_easy_cleanup(_curl);
@@ -164,15 +167,20 @@ struct RequestReader {
 
   std::vector<std::string> requestColumns(const std::string& query);
   void requestIds(const std::string& qurl);
+  std::map<size_t, std::pair<double, double>> requestRasterMeta(
+      const std::string& query);
   void requestRows(const std::string& qurl);
   void requestRows(const std::string& query,
                    size_t (*writeCb)(void*, size_t, size_t, void*), void* ptr);
   void parse(const char*, size_t size);
   void parseIds(const char*, size_t size);
+  void parseRasterMeta(const char*, size_t size);
 
   static size_t writeCb(void* contents, size_t size, size_t nmemb, void* userp);
   static size_t writeCbIds(void* contents, size_t size, size_t nmemb,
                            void* userp);
+  static size_t writeCbRasterMeta(void* contents, size_t size, size_t nmemb,
+                                  void* userp);
 
   std::string queryFields(const std::string& query) const;
 
@@ -184,6 +192,11 @@ struct RequestReader {
   size_t _curRow = 0;
 
   std::string _dangling, _raw, _curVal;
+  size_t _curDatasetId = 0;
+  double _curFieldWidth = 0;
+  double _curFieldHeight = 0;
+  std::map<size_t, std::pair<double, double>> _curRasterFieldDimensions;
+
   ParseState _state = IN_HEADER;
 
   std::vector<std::vector<std::pair<std::string, std::string>>> rows;
@@ -195,10 +208,12 @@ struct RequestReader {
   size_t _received = 0;
   std::vector<std::vector<IdMapping>> _ids;
   std::vector<std::vector<double>> _vals;
+  std::vector<std::vector<size_t>> _rasterMetas;
   size_t _maxMemory;
 
   size_t _geomFields;
   size_t _valFields;
+  size_t _rasterMetaFields;
 
   std::exception_ptr exceptionPtr;
 };

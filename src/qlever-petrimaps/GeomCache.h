@@ -23,6 +23,16 @@
 
 namespace petrimaps {
 
+const static std::string RASTER_META_QUERY_DEFAULT =
+"PREFIX wp: <https://wald.cs.uni-freiburg.de/ontology#>"
+"PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>"
+"PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>"
+"SELECT ?label ?w ?h WHERE {"
+"  ?s wp:fieldHeight ?h ."
+"  ?s wp:fieldWidth ?w ."
+"  ?s rdfs:label ?label ."
+"}";
+
 const static std::string FILL_QUERY_DEFAULT =
     "PREFIX geo: <http://www.opengis.net/ont/geosparql#> "
     "SELECT ?geometry WHERE {"
@@ -59,10 +69,11 @@ inline std::string getFillQuery(const std::string& backend) {
 struct GeomCacheConfig {
   std::string backend;
   std::string fillQuery;
+  std::string rasterMetaQuery = RASTER_META_QUERY_DEFAULT;
 
   std::string getHash() const {
     std::hash<std::string> hashF;
-    return std::to_string(hashF(backend + fillQuery));
+    return std::to_string(hashF(backend + fillQuery + rasterMetaQuery));
   }
 
   std::string toJSON() const {
@@ -164,6 +175,8 @@ class GeomCache {
   static std::string indexHashFromDisk(const std::string& fname);
   static std::string fillQueryFromDisk(const std::string& fname);
 
+  std::pair<double, double> getRasterMeta(size_t did) const;
+
   double getLoadStatusPercent(bool total);
   double getLoadStatusPercent() { return getLoadStatusPercent(false); };
   int getLoadStatusStage();
@@ -199,6 +212,8 @@ class GeomCache {
   std::string getCountQuery() const;
 
   std::string requestIndexHash();
+
+  void requestRasterMeta();
 
   std::string queryFields(std::string query, size_t offset, size_t limit) const;
 
@@ -236,6 +251,8 @@ class GeomCache {
   std::fstream _linePointsF;
   std::fstream _linesF;
   std::fstream _qidToIdF;
+
+  std::map<size_t, std::pair<double, double>> _rasterMeta;
 
   size_t _geometryDuplicates = 0;
 

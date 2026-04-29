@@ -308,11 +308,12 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
   std::vector<unsigned char> image(w * h * 4);
 
   std::vector<std::vector<uint32_t>> points(NUM_THREADS);
-  std::vector<std::vector<double>> points2(NUM_THREADS);
+  std::vector<std::vector<double>> weights(NUM_THREADS);
+  std::vector < std::vector<std::pair<float, float>>> rasterDims(NUM_THREADS);
 
   // initialize vectors to 0
   checkMem(sizeof(unsigned char) * w * h * 4, _maxMemory);
-  for (size_t i = 0; i < NUM_THREADS; i++) points2[i].resize(w * h, 0);
+  for (size_t i = 0; i < NUM_THREADS; i++) weights[i].resize(w * h, 0);
 
   // POINTS
   if (intersects(r->getPointGrid(fid).getBBox(), fbbox)) {
@@ -349,8 +350,8 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
           int ppx = ((p.getX() - bbox.getLowerLeft().getX()) / mercW) * w;
           int ppy = h - ((p.getY() - bbox.getLowerLeft().getY()) / mercH) * h;
 
-          drawPoint(points[0], points2[0], px, py, w, h, style,
-                    r->getVal(fid, oid));
+          drawPoint(points[0], weights[0], rasterDims[0], px, py, w, h, style,
+                    r->getVal(fid, oid), rasterWidth, rasterHeight);
           drawLine(image.data(), ppx, ppy, px, py, w, h);
         } else {
           if (i >= objs.size() + dynPoints.size())
@@ -367,8 +368,14 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
           int px = ((p.getX() - bbox.getLowerLeft().getX()) / mercW) * w;
           int py = h - ((p.getY() - bbox.getLowerLeft().getY()) / mercH) * h;
 
-          drawPoint(points[0], points2[0], px, py, w, h, style,
-                    r->getVal(fid, i));
+          if (style == RASTER) {
+            std::pair<double, double> rasterMeta = r->getRasterMetas(fid, i);
+            rasterWidth = rasterMeta.first;
+            rasterHeight = rasterMeta.second;
+          }
+
+          drawPoint(points[0], weights[0], rasterDims[0], px, py, w, h, style,
+                    r->getVal(fid, i), rasterWidth, rasterHeight);
         }
       }
     } else {
@@ -399,8 +406,9 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
                     h;
 
             drawPoint(points[omp_get_thread_num()],
-                      points2[omp_get_thread_num()], px, py, w, h, style,
-                      cell->size());
+                      weights[omp_get_thread_num()],
+                      rasterDims[omp_get_thread_num()], px, py, w, h, style,
+                      cell->size(), rasterWidth, rasterHeight);
           } else {
             for (auto i : *cell) {
               if (i >=
@@ -419,9 +427,18 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
               int px = ((p.getX() - bbox.getLowerLeft().getX()) / mercW) * w;
               int py =
                   h - ((p.getY() - bbox.getLowerLeft().getY()) / mercH) * h;
+
+              if (style == RASTER) {
+                std::pair<double, double> rasterMeta =
+                    r->getRasterMetas(fid, i);
+                rasterWidth = rasterMeta.first;
+                rasterHeight = rasterMeta.second;
+              }
+
               drawPoint(points[omp_get_thread_num()],
-                        points2[omp_get_thread_num()], px, py, w, h, style,
-                        r->getVal(fid, i));
+                        weights[omp_get_thread_num()],
+                        rasterDims[omp_get_thread_num()], px, py, w, h, style,
+                        r->getVal(fid, i), rasterWidth, rasterHeight);
             }
           }
         }
@@ -456,8 +473,8 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
           int py = h - ((p.getY() - bbox.getLowerLeft().getY()) / mercH) * h;
 
           if (px >= 0 && py >= 0 && px < w && py < h) {
-            if (points2[0][w * py + px] == 0) points[0].push_back(w * py + px);
-            points2[0][py * w + px] += r->getVal(fid, oid);
+            if (weights[0][w * py + px] == 0) points[0].push_back(w * py + px);
+            weights[0][py * w + px] += r->getVal(fid, oid);
           }
         }
       }
@@ -487,9 +504,9 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
                  mercH) *
                     h;
             if (px >= 0 && py >= 0 && px < w && py < h) {
-              if (points2[omp_get_thread_num()][w * py + px] == 0)
+              if (weights[omp_get_thread_num()][w * py + px] == 0)
                 points[omp_get_thread_num()].push_back(w * py + px);
-              points2[omp_get_thread_num()][py * w + px] += cell->size();
+              weights[omp_get_thread_num()][py * w + px] += cell->size();
             }
           } else {
             for (const auto& p : *cell) {
@@ -502,9 +519,9 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
                             mercH) *
                                h;
               if (px >= 0 && py >= 0 && px < w && py < h) {
-                if (points2[omp_get_thread_num()][w * py + px] == 0)
+                if (weights[omp_get_thread_num()][w * py + px] == 0)
                   points[omp_get_thread_num()].push_back(w * py + px);
-                points2[omp_get_thread_num()][py * w + px] += 1;
+                weights[omp_get_thread_num()][py * w + px] += 1;
               }
             }
           }
@@ -521,9 +538,9 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
       for (const auto& p : points[i]) {
         size_t y = p / w;
         size_t x = p - (y * w);
-        if (points2[i][p] > 0)
+        if (weights[i][p] > 0)
           heatmap_add_weighted_point_with_stamp_no_aggreg(hm, x, y,
-                                                          points2[i][p], stamp);
+                                                          weights[i][p], stamp);
       }
     }
     heatmap_stamp_free(stamp);
@@ -533,7 +550,7 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
       for (const auto& p : points[i]) {
         size_t y = p / w;
         size_t x = p - (y * w);
-        if (points2[i][p] > 0)
+        if (weights[i][p] > 0)
           heatmap_add_weighted_point_with_stamp(hm, x, y, 1, stamp);
       }
     }
@@ -543,8 +560,8 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
       for (const auto& p : points[i]) {
         size_t y = p / w;
         size_t x = p - (y * w);
-        if (points2[i][p] > 0)
-          heatmap_add_weighted_point(hm, x, y, points2[i][p]);
+        if (weights[i][p] > 0)
+          heatmap_add_weighted_point(hm, x, y, weights[i][p]);
       }
     }
   }
@@ -1407,17 +1424,21 @@ util::http::Answer Server::handleLoadStatusReq(const Params& pars) const {
 
 // _____________________________________________________________________________
 void Server::drawPoint(std::vector<uint32_t>& points,
-                       std::vector<double>& points2, int px, int py, int w,
-                       int h, MapStyle style, double weight) const {
+                       std::vector<double>& weights,
+                       std::vector <
+                           std::vector<std::pair<float, float>>> rasterDims,
+                       int px, int py, int w, int h, MapStyle style,
+                       double weight, double rasterW, double rasterH) const {
   if (style == RASTER) {
     if (px >= 0 && py >= 0 && px < w && py < h) {
-      if (points2[w * py + px] == 0) {
+      rasterDims[w * py + px] = {rasterW, rasterH};
+      if (weights[w * py + px] == 0) {
         points.push_back(w * py + px);
-        points2[w * py + px] = weight;
+        weights[w * py + px] = weight;
       } else {
         // not entirely correct, but looks good on very low zoom levels
         // where many raster cells are rendered onto the same pixel
-        points2[w * py + px] = (points2[w * py + px] + weight) / 2.0;
+        weights[w * py + px] = (weights[w * py + px] + weight) / 2.0;
       }
     }
   } else if (style == OBJECTS) {
@@ -1425,15 +1446,15 @@ void Server::drawPoint(std::vector<uint32_t>& points,
     for (int x = px - 2; x < px + 2; x++) {
       for (int y = py - 2; y < py + 2; y++) {
         if (x >= 0 && y >= 0 && x < w && y < h) {
-          if (points2[w * y + x] == 0) points.push_back(w * y + x);
-          points2[w * y + x] += weight;
+          if (weights[w * y + x] == 0) points.push_back(w * y + x);
+          weights[w * y + x] += weight;
         }
       }
     }
   } else {
     if (px >= 0 && py >= 0 && px < w && py < h) {
-      if (points2[w * py + px] == 0) points.push_back(w * py + px);
-      points2[w * py + px] += weight;
+      if (weights[w * py + px] == 0) points.push_back(w * py + px);
+      weights[w * py + px] += weight;
     }
   }
 }
@@ -1603,6 +1624,8 @@ RequestorConfig Server::getRequestorCfgFromJSON(
               curField.name = layer.value()["name"];
             if (layer.value().contains("weightfield"))
               curField.valueField = layer.value()["weightfield"];
+            if (layer.value().contains("rasterfield"))
+              curField.rasterMetaField = layer.value()["rasterfield"];
             if (layer.value().contains("toggle"))
               curField.toggle = layer.value()["toggle"];
             if (layer.value().contains("rasterw"))

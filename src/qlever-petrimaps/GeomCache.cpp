@@ -1286,7 +1286,25 @@ void GeomCache::serializeToDisk(const std::string &fname) const {
 }
 
 // _____________________________________________________________________________
+void GeomCache::requestRasterMeta() {
+  auto r = RequestReader(getConfig().backend, _maxMemory, 0, 0, 0);
+
+  _rasterMeta = r.requestRasterMeta(getConfig().rasterMetaQuery);
+}
+
+// _____________________________________________________________________________
+std::pair<double, double> GeomCache::getRasterMeta(size_t did) const {
+  auto i = _rasterMeta.find(did);
+  if (i != _rasterMeta.end()) return i->second;
+
+  LOG(WARN) << "[GEOMCACHE] Unknown raster dataset " << did;
+
+  return {10, 10};
+}
+
+// _____________________________________________________________________________
 std::string GeomCache::requestIndexHash() {
+  // TODO: move this function into Reader class
   CURLcode res;
   char errbuf[CURL_ERROR_SIZE];
   std::string response;
@@ -1376,6 +1394,11 @@ std::string GeomCache::load(const std::string &cacheDir) {
     LOG(INFO) << "Index hash is '" << _indexHash << "'";
     request();
     requestIds();
+  }
+
+  // read raster meta data
+  if (getConfig().rasterMetaQuery.size()) {
+    requestRasterMeta();
   }
 
   _ready = true;

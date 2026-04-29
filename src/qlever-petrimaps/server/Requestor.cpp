@@ -46,7 +46,7 @@ void Requestor::request() {
   _clusterObjects.clear();
 
   RequestReader reader(_cache->getConfig().backend, _maxMemory,
-                       _geomColumns.size(), _valueFlds.size());
+                       _geomColumns.size(), _valueFlds.size(), _rasterMetaFlds.size());
 
   _sortColumn = "";
 
@@ -57,6 +57,9 @@ void Requestor::request() {
 
     // value columns come after geom columns
     wantCols.insert(wantCols.end(), _valueColumns.begin(), _valueColumns.end());
+
+		// raster columns come after value columns
+    wantCols.insert(wantCols.end(), _rasterMetaColumns.begin(), _rasterMetaColumns.end());
 
     std::string prepedGeomQuery = prepQuery(_rcfg.query, wantCols, _sortColumn);
 
@@ -83,6 +86,7 @@ void Requestor::request() {
 
   _objects.resize(_geomColumns.size());
   _vals.resize(_geomColumns.size());
+  _rasterMetas.resize(_geomColumns.size());
   _dynamicPoints.resize(_geomColumns.size());
   _pgrid.resize(_geomColumns.size());
   _lgrid.resize(_geomColumns.size());
@@ -109,6 +113,13 @@ void Requestor::request() {
         if (v < _valMin) _valMin = v;
         if (v > _valMax) _valMax = v;
       }
+    }
+
+		std::cout << "RASTER RETRIEVAL" << std::endl;
+
+    if (_rasterMetaFlds.count(geomColId)) {
+			std::cout << _rasterMetaFlds[geomColId] << std::endl;
+      _rasterMetas[geomColId] = std::move(reader._rasterMetas[_rasterMetaFlds[geomColId]]);
     }
 
     LOG(INFO) << "[REQUESTOR] ... done, got " << _objects[geomColId].size()
@@ -432,7 +443,7 @@ std::vector<std::pair<std::string, std::string>> Requestor::requestRow(
   if (!_cache->ready()) {
     throw std::runtime_error("Geom cache not ready");
   }
-  RequestReader reader(_cache->getConfig().backend, _maxMemory, {}, {});
+  RequestReader reader(_cache->getConfig().backend, _maxMemory, 0, 0, 0);
   LOG(INFO) << "[REQUESTOR] Requesting single row " << row << " for query "
             << _rcfg.query;
   auto query = prepQueryRow(_rcfg.query, row);
@@ -454,7 +465,7 @@ void Requestor::requestRows(
   if (!_cache->ready()) {
     throw std::runtime_error("Geom cache not ready");
   }
-  RequestReader reader(_cache->getConfig().backend, _maxMemory, {}, {});
+  RequestReader reader(_cache->getConfig().backend, _maxMemory, 0, 0, 0);
   LOG(INFO) << "[REQUESTOR] Requesting rows for query " << _rcfg.query;
 
   ReaderCbPair cbPair{&reader, cb};
@@ -490,7 +501,7 @@ std::vector<std::string> Requestor::getColumns(std::string query) const {
 
   query += " LIMIT 0";
 
-  RequestReader reader(_cache->getConfig().backend, _maxMemory, {}, {});
+  RequestReader reader(_cache->getConfig().backend, _maxMemory, 0, 0, 0);
   return reader.requestColumns(query);
 }
 
@@ -1140,6 +1151,26 @@ bool Requestor::lineIntersects(size_t lineId,
 std::pair<double, double> Requestor::getValRange() const {
   if (_valMin >= _valMax) return {0, 0};
   return {_valMin, _valMax};
+}
+
+// _____________________________________________________________________________
+std::pair<double, double> Requestor::getRasterMetas(size_t fieldId, size_t oid) const {
+  if (oid < _objects[fieldId].size()) {
+    if (_objects[fieldId][oid].second >= _rasterMetas[fieldId].size()) return {10, 10};
+    size_t did =  _rasterMetas[fieldId][_objects[fieldId][oid].second];
+		return _cache->getRasterMeta(did);
+  }
+  if (oid >= _objects[fieldId].size()) {
+    if (_dynamicPoints[fieldId][oid - _objects[fieldId].size()].second >=
+        _rasterMetas[fieldId].size())
+      return {10, 10};
+    size_t did = _rasterMetas[fieldId]
+                [_dynamicPoints[fieldId][oid - _objects[fieldId].size()]
+                     .second];
+		return _cache->getRasterMeta(did);
+  }
+
+  return {10, 10};
 }
 
 // _____________________________________________________________________________

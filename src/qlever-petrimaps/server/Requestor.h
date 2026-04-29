@@ -26,6 +26,7 @@ struct FieldConfig {
   std::string id = "";
   std::string name = "";
   std::string valueField = "";
+  std::string rasterMetaField = "";
   std::string toggle = "";
   double rasterW = 0;
   double rasterH = 0;
@@ -97,6 +98,10 @@ class Requestor {
         if (_columnsMap.count(field.valueField)) {
           _valueFlds[_geomColumns.size() - 1] = _valueColumns.size();
           _valueColumns.push_back(field.valueField);
+        }
+        if (_columnsMap.count(field.rasterMetaField)) {
+          _rasterMetaFlds[_geomColumns.size() - 1] = _rasterMetaColumns.size();
+          _rasterMetaColumns.push_back(field.rasterMetaField);
         }
       }
     }
@@ -199,6 +204,7 @@ class Requestor {
   std::vector<std::string> getColumns(std::string query) const;
 
   double getVal(size_t lid, size_t oid) const;
+  std::pair<double, double> getRasterMetas(size_t lid, size_t oid) const;
 
   size_t getFieldId(const std::string& field) {
     auto it = _geoColToLid.find(field);
@@ -250,13 +256,16 @@ class Requestor {
       _clusterObjects;
   std::vector<std::vector<double>> _vals;
   double _valMax = 0, _valMin = 1;
+  std::vector<std::vector<size_t>> _rasterMetas;
   std::vector<size_t> _numObjects;
 
   std::vector<std::string> _geomColumns;
   std::vector<std::string> _valueColumns;
+  std::vector<std::string> _rasterMetaColumns;
   std::map<std::string, size_t> _columnsMap;
   std::map<std::string, size_t> _geoColToLid;
   std::map<size_t, size_t> _valueFlds;
+  std::map<size_t, size_t> _rasterMetaFlds;
 
   std::vector<petrimaps::Grid<ID_TYPE, float>> _pgrid;
   std::vector<petrimaps::Grid<ID_TYPE, float>> _lgrid;

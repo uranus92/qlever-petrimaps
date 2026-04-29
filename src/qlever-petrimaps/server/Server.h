@@ -80,9 +80,10 @@ class Server : public util::http::Handler {
 
   static int hexToInt(char c);
 
-  void drawPoint(std::vector<uint32_t>& points, std::vector<double>& points2,
+  void drawPoint(std::vector<uint32_t>& points, std::vector<double>& weights,
+                 std::vector<std::vector<std::pair<float, float>>> rasterDims,
                  int px, int py, int w, int h, MapStyle style,
-                 double weight) const;
+                 double weight, double rasterW, double rasterH) const;
   void drawLine(unsigned char* image, int x0, int y0, int x1, int y1, int w,
                 int h) const;
   heatmap_stamp_t* raster_stamp(double res, double w, double h, double screenW,
