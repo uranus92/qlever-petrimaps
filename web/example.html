@@ -128,11 +128,11 @@
       if (method === 'GET') {
         let pars = new URLSearchParams(new FormData(form));
         pars.delete("method");
-        window.open('/' + '?' + pars.toString(), "_blank");
+        window.open('.' + '?' + pars.toString(), "_blank");
       } else {
         const tempForm = document.createElement('form');
         tempForm.method = 'POST';
-        tempForm.action = '/';
+        tempForm.action = '.';
 
         const formData = new FormData(form);
         formData.forEach((value, key) => {
