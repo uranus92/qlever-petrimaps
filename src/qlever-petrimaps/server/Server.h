@@ -81,13 +81,19 @@ class Server : public util::http::Handler {
   static int hexToInt(char c);
 
   void drawPoint(std::vector<uint32_t>& points, std::vector<double>& weights,
-                 std::vector<std::pair<float, float>>& rasterDims,
-                 int px, int py, int w, int h, MapStyle style,
-                 double weight, double rasterW, double rasterH) const;
+                 std::vector<std::pair<float, float>>& rasterDims, int px,
+                 int py, int w, int h, MapStyle style, double weight,
+                 double rasterW, double rasterH) const;
   void drawLine(unsigned char* image, int x0, int y0, int x1, int y1, int w,
                 int h) const;
-  heatmap_stamp_t* raster_stamp(double res, double w, double h, double screenW,
-                                double screenH) const;
+  util::geo::Point<int> mercToPx(util::geo::FPoint p, double orx, double ory,
+                                 double mercW, double mercH, int w,
+                                 int h) const;
+  util::geo::Point<int> mercToPx(util::geo::DPoint p, double orx, double ory,
+                                 double mercW, double mercH, int w,
+                                 int h) const;
+  heatmap_stamp_t* rasterStamp(double res, double w, double h, double screenW,
+                               double screenH) const;
 
   size_t _maxMemory;
 

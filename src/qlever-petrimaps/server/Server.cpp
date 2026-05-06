@@ -279,6 +279,9 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
   auto bbox = DBox({x1, y1}, {x2, y2});
   auto fbbox = FBox({x1, y1}, {x2, y2});
 
+  double orx = bbox.getLowerLeft().getX();
+  double ory = bbox.getLowerLeft().getY();
+
   int w = atoi(pars.find("width")->second.c_str());
   int h = atoi(pars.find("height")->second.c_str());
 
@@ -309,7 +312,7 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
 
   std::vector<std::vector<uint32_t>> points(NUM_THREADS);
   std::vector<std::vector<double>> weights(NUM_THREADS);
-  std::vector < std::vector<std::pair<float, float>>> rasterDims(NUM_THREADS);
+  std::vector<std::vector<std::pair<float, float>>> rasterDims(NUM_THREADS);
 
   // initialize vectors to 0
   checkMem(sizeof(unsigned char) * w * h * 4, _maxMemory);
@@ -317,7 +320,8 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
 
   if (style == RASTER && parts.size() > 1) {
     checkMem(sizeof(unsigned char) * w * h * 4, _maxMemory);
-    for (size_t i = 0; i < NUM_THREADS; i++) rasterDims[i].resize(w * h, {1, 1});
+    for (size_t i = 0; i < NUM_THREADS; i++)
+      rasterDims[i].resize(w * h, {1, 1});
   }
 
   // POINTS
@@ -330,57 +334,45 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
       r->getPointGrid(fid).get(fbbox, &ret);
 
       for (size_t j = 0; j < ret.size(); j++) {
-        size_t i = ret[j];
+        size_t oid = ret[j];
 
         const auto& objs = r->getObjects(fid);
         const auto& dynPoints = r->getDynamicPoints(fid);
 
-        if (i >= objs.size() + dynPoints.size() && style == OBJECTS) {
-          size_t cid = i - objs.size() - dynPoints.size();
-          FPoint p;
-          size_t oid = r->getClusters(fid)[cid].first;
+        if (r->isCluster(fid, oid) && style == OBJECTS) {
+          size_t cid = oid - objs.size() - dynPoints.size();
+          oid = r->getCluster(fid, oid).first;
 
-          if (oid >= objs.size())
-            p = dynPoints[oid - objs.size()].first;
-          else
-            p = r->getPoint(objs[oid].first);
-
+          FPoint p = r->getPoint(fid, oid);
           if (!contains(p, fbbox)) continue;
 
           const auto& cp = r->clusterGeom(fid, cid, res);
 
-          int px = ((cp.getX() - bbox.getLowerLeft().getX()) / mercW) * w;
-          int py = h - ((cp.getY() - bbox.getLowerLeft().getY()) / mercH) * h;
+          auto px = mercToPx(cp, orx, ory, mercW, mercH, w, h);
+          auto ppx = mercToPx(p, orx, ory, mercW, mercH, w, h);
 
-          int ppx = ((p.getX() - bbox.getLowerLeft().getX()) / mercW) * w;
-          int ppy = h - ((p.getY() - bbox.getLowerLeft().getY()) / mercH) * h;
-
-          drawPoint(points[0], weights[0], rasterDims[0], px, py, w, h, style,
-                    r->getVal(fid, oid), rasterWidth, rasterHeight);
-          drawLine(image.data(), ppx, ppy, px, py, w, h);
+          drawPoint(points[0], weights[0], rasterDims[0], px.getX(), px.getY(),
+                    w, h, style, r->getVal(fid, oid), rasterWidth,
+                    rasterHeight);
+          drawLine(image.data(), ppx.getX(), ppx.getY(), ppx.getX(), ppx.getY(),
+                   w, h);
         } else {
-          if (i >= objs.size() + dynPoints.size())
-            i = r->getClusters(fid)[i - objs.size() - dynPoints.size()].first;
+          if (r->isCluster(fid, oid)) oid = r->getCluster(fid, oid).first;
 
-          FPoint p;
-          if (i < objs.size())
-            p = r->getPoint(objs[i].first);
-          else
-            p = r->getDPoint(fid, i - objs.size());
-
+          FPoint p = r->getPoint(fid, oid);
           if (!contains(p, fbbox)) continue;
 
-          int px = ((p.getX() - bbox.getLowerLeft().getX()) / mercW) * w;
-          int py = h - ((p.getY() - bbox.getLowerLeft().getY()) / mercH) * h;
+          auto px = mercToPx(p, orx, ory, mercW, mercH, w, h);
 
           if (style == RASTER) {
-            std::pair<double, double> rasterMeta = r->getRasterMetas(fid, i);
+            auto rasterMeta = r->getRasterMetas(fid, oid);
             rasterWidth = rasterMeta.first;
             rasterHeight = rasterMeta.second;
           }
 
-          drawPoint(points[0], weights[0], rasterDims[0], px, py, w, h, style,
-                    r->getVal(fid, i), rasterWidth, rasterHeight);
+          drawPoint(points[0], weights[0], rasterDims[0], px.getX(), px.getY(),
+                    w, h, style, r->getVal(fid, oid), rasterWidth,
+                    rasterHeight);
         }
       }
     } else {
@@ -400,50 +392,30 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
           const auto& cellBox = grid.getBox(x, y);
 
           if (subCellSize == 1) {
-            int px =
-                ((cellBox.getLowerLeft().getX() - bbox.getLowerLeft().getX()) /
-                 mercW) *
-                w;
-            int py =
-                h -
-                ((cellBox.getLowerLeft().getY() - bbox.getLowerLeft().getY()) /
-                 mercH) *
-                    h;
+            auto px =
+                mercToPx(cellBox.getLowerLeft(), orx, ory, mercW, mercH, w, h);
 
             drawPoint(points[omp_get_thread_num()],
                       weights[omp_get_thread_num()],
-                      rasterDims[omp_get_thread_num()], px, py, w, h, style,
-                      cell->size(), rasterWidth, rasterHeight);
+                      rasterDims[omp_get_thread_num()], px.getX(), px.getY(), w,
+                      h, style, cell->size(), rasterWidth, rasterHeight);
           } else {
-            for (auto i : *cell) {
-              if (i >=
-                  r->getObjects(fid).size() + r->getDynamicPoints(fid).size()) {
-                i = r->getClusters(fid)[i - r->getObjects(fid).size() -
-                                        r->getDynamicPoints(fid).size()]
-                        .first;
-              }
+            for (auto oid : *cell) {
+              if (r->isCluster(fid, oid)) oid = r->getCluster(fid, oid).first;
 
-              FPoint p;
-              if (i < r->getObjects(fid).size())
-                p = r->getPoint(r->getObjects(fid)[i].first);
-              else
-                p = r->getDPoint(fid, i - r->getObjects(fid).size());
-
-              int px = ((p.getX() - bbox.getLowerLeft().getX()) / mercW) * w;
-              int py =
-                  h - ((p.getY() - bbox.getLowerLeft().getY()) / mercH) * h;
+              FPoint p = r->getPoint(fid, oid);
+              auto px = mercToPx(p, orx, ory, mercW, mercH, w, h);
 
               if (style == RASTER) {
-                std::pair<double, double> rasterMeta =
-                    r->getRasterMetas(fid, i);
+                auto rasterMeta = r->getRasterMetas(fid, oid);
                 rasterWidth = rasterMeta.first;
                 rasterHeight = rasterMeta.second;
               }
 
-              drawPoint(points[omp_get_thread_num()],
-                        weights[omp_get_thread_num()],
-                        rasterDims[omp_get_thread_num()], px, py, w, h, style,
-                        r->getVal(fid, i), rasterWidth, rasterHeight);
+              drawPoint(
+                  points[omp_get_thread_num()], weights[omp_get_thread_num()],
+                  rasterDims[omp_get_thread_num()], px.getX(), px.getY(), w, h,
+                  style, r->getVal(fid, oid), rasterWidth, rasterHeight);
             }
           }
         }
@@ -474,8 +446,9 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
             densify(r->extractLineGeom(lineId - I_OFFSET), res);
 
         for (const auto& p : denseLine) {
-          int px = ((p.getX() - bbox.getLowerLeft().getX()) / mercW) * w;
-          int py = h - ((p.getY() - bbox.getLowerLeft().getY()) / mercH) * h;
+          auto pix = mercToPx(p, orx, ory, mercW, mercH, w, h);
+          int px = pix.getX();
+          int py = pix.getY();
 
           if (px >= 0 && py >= 0 && px < w && py < h) {
             if (weights[0][w * py + px] == 0) points[0].push_back(w * py + px);
@@ -499,15 +472,10 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
           const auto& cellBox = lpgrid.getBox(x, y);
 
           if (subCellSize == 1) {
-            int px =
-                ((cellBox.getLowerLeft().getX() - bbox.getLowerLeft().getX()) /
-                 mercW) *
-                w;
-            int py =
-                h -
-                ((cellBox.getLowerLeft().getY() - bbox.getLowerLeft().getY()) /
-                 mercH) *
-                    h;
+            auto pix =
+                mercToPx(cellBox.getLowerLeft(), orx, ory, mercW, mercH, w, h);
+            int px = pix.getX();
+            int py = pix.getY();
             if (px >= 0 && py >= 0 && px < w && py < h) {
               if (weights[omp_get_thread_num()][w * py + px] == 0)
                 points[omp_get_thread_num()].push_back(w * py + px);
@@ -544,21 +512,21 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
       for (const auto& p : points[i]) {
         if (stamps.count(rasterDims[i][p])) continue;
         if (weights[i][p] == 0) continue;
-        stamps[rasterDims[i][p]] = raster_stamp(res, rasterDims[i][p].first, rasterDims[i][p].second, w, h);
+        stamps[rasterDims[i][p]] = rasterStamp(res, rasterDims[i][p].first,
+                                               rasterDims[i][p].second, w, h);
       }
     }
 
     // now render per stamp style
     for (auto stamp : stamps) {
-      std::cout << stamp.first.first << "x" << stamp.first.second << std::endl;
       for (size_t i = 0; i < NUM_THREADS; i++) {
         for (const auto& p : points[i]) {
           size_t y = p / w;
           size_t x = p - (y * w);
           if (weights[i][p] == 0) continue;
           if (rasterDims[i][p] != stamp.first) continue;
-          heatmap_add_weighted_point_with_stamp_no_aggreg(hm, x, y,
-                                                            weights[i][p], stamp.second);
+          heatmap_add_weighted_point_with_stamp_no_aggreg(
+              hm, x, y, weights[i][p], stamp.second);
         }
       }
     }
@@ -1445,10 +1413,9 @@ util::http::Answer Server::handleLoadStatusReq(const Params& pars) const {
 // _____________________________________________________________________________
 void Server::drawPoint(std::vector<uint32_t>& points,
                        std::vector<double>& weights,
-                       
-                           std::vector<std::pair<float, float>>& rasterDims,
-                       int px, int py, int w, int h, MapStyle style,
-                       double weight, double rasterW, double rasterH) const {
+                       std::vector<std::pair<float, float>>& rasterDims, int px,
+                       int py, int w, int h, MapStyle style, double weight,
+                       double rasterW, double rasterH) const {
   if (style == RASTER) {
     if (px >= 0 && py >= 0 && px < w && py < h) {
       rasterDims[w * py + px] = {rasterW, rasterH};
@@ -1582,12 +1549,12 @@ void Server::drawLine(unsigned char* image, int x0, int y0, int x1, int y1,
 }
 
 // _____________________________________________________________________________
-heatmap_stamp_t* Server::raster_stamp(double res, double w, double h,
-                                      double screenW, double screenH) const {
+heatmap_stamp_t* Server::rasterStamp(double res, double w, double h,
+                                     double screenW, double screenH) const {
   if (w < 0) w = 0;
   if (h < 0) h = 0;
-  if (isnan(w)) w = 0;  // NaN
-  if (isnan(h)) h = 0;  // NaN
+  if (isnan(w)) w = 0;
+  if (isnan(h)) h = 0;
 
   int width = std::min(screenW * 2, (ceil(w / res)));
   int height = std::min(screenH * 2, (ceil(h / res)));
@@ -1733,6 +1700,20 @@ GeomCacheConfig Server::getGeomCacheConfig(
         canonizedBackend, petrimaps::getFillQuery(canonizedBackend)};
   }
   return _cacheConfigs[canonizedBackend];
+}
+
+// _____________________________________________________________________________
+util::geo::Point<int> Server::mercToPx(FPoint p, double orx, double ory,
+                                       double mercW, double mercH, int w,
+                                       int h) const {
+  return {((p.getX() - orx) / mercW) * w, h - ((p.getY() - ory) / mercH) * h};
+}
+
+// _____________________________________________________________________________
+util::geo::Point<int> Server::mercToPx(DPoint p, double orx, double ory,
+                                       double mercW, double mercH, int w,
+                                       int h) const {
+  return {((p.getX() - orx) / mercW) * w, h - ((p.getY() - ory) / mercH) * h};
 }
 
 // _____________________________________________________________________________

@@ -117,10 +117,7 @@ void Requestor::request() {
       }
     }
 
-    std::cout << "RASTER RETRIEVAL" << std::endl;
-
     if (_rasterMetaFlds.count(geomColId)) {
-      std::cout << _rasterMetaFlds[geomColId] << std::endl;
       _rasterMetas[geomColId] =
           std::move(reader._rasterMetas[_rasterMetaFlds[geomColId]]);
     }
@@ -1061,7 +1058,7 @@ util::geo::DPoint Requestor::clusterGeom(size_t fieldId, size_t cid,
   if (oid >= _objects[fieldId].size())
     pp = _dynamicPoints[fieldId][oid - _objects[fieldId].size()].first;
   else
-    pp = getPoint(_objects[fieldId][oid].first);
+    pp = getCPoint(fieldId, oid);
 
   if (res < 0) return {pp.getX(), pp.getY()};
 

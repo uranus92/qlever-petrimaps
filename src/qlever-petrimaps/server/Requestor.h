@@ -152,13 +152,26 @@ class Requestor {
     return _clusterObjects[fieldId];
   }
 
-  const util::geo::FPoint& getPoint(ID_TYPE id) const {
-    return _cache->getPoints()[id];
+  const std::pair<ID_TYPE, std::pair<size_t, size_t>>& getCluster(
+      size_t fieldId, size_t oid) const {
+    size_t cid = oid - _objects[fieldId].size() - _dynamicPoints[fieldId].size();
+    return _clusterObjects[fieldId][cid];
   }
 
-  const util::geo::FPoint& getDPoint(size_t fieldId, ID_TYPE id) const {
-    return _dynamicPoints[fieldId][id].first;
+  const util::geo::FPoint& getCPoint(size_t fieldId, ID_TYPE oid) const {
+    return _cache->getPoints()[_objects[fieldId][oid].first];
   }
+
+  const util::geo::FPoint& getDPoint(size_t fieldId, ID_TYPE oid) const {
+    return _dynamicPoints[fieldId][oid - _objects[fieldId].size()].first;
+  }
+
+  const util::geo::FPoint& getPoint(size_t fieldId, ID_TYPE oid) const {
+    if (oid < _objects[fieldId].size()) return getCPoint(fieldId, oid);
+    return getDPoint(fieldId, oid);
+  }
+
+  bool isCluster(size_t fieldId, ID_TYPE id) const { return id > getObjects(fieldId).size() + getDynamicPoints(fieldId).size(); }
 
   size_t getLine(ID_TYPE id) const { return _cache->getLine(id); }
 
