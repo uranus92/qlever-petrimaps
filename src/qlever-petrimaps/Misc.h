@@ -67,7 +67,7 @@ std::string canonizeURL(const std::string& inURL);
 
 class OutOfMemoryError : public std::exception {
  public:
-  explicit OutOfMemoryError(size_t want, size_t have, size_t max) {
+  explicit OutOfMemoryError(double want, size_t have, size_t max) {
     std::stringstream ss;
     ss << "Out of memory, ";
     ss << "want: " << want << " bytes, already used: " << have << " of " << max

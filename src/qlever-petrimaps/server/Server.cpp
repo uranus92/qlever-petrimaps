@@ -525,6 +525,7 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
           size_t x = p - (y * w);
           if (weights[i][p] == 0) continue;
           if (rasterDims[i][p] != stamp.first) continue;
+          if (!stamp.second) continue;
           heatmap_add_weighted_point_with_stamp_no_aggreg(
               hm, x, y, weights[i][p], stamp.second);
         }
@@ -569,7 +570,7 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
         objColorB, 192,       objColorR, objColorG, objColorB, 224,
         objColorR, objColorG, objColorB, 255};
     heatmap_colorscheme_t discrete = {
-        discrete_data, sizeof(discrete_data) / sizeof(discrete_data[0] / 4)};
+        discrete_data, sizeof(discrete_data) / sizeof(discrete_data[0]) / 4};
 
     heatmap_render_saturated_to(hm, &discrete, 1, &image[0]);
   } else {
@@ -1128,7 +1129,7 @@ inline void pngWarnCb(png_structp, png_const_charp error_msg) {
 
 // _____________________________________________________________________________
 inline void pngErrorCb(png_structp, png_const_charp error_msg) {
-  throw std::runtime_error(error_msg);
+  LOG(ERROR) << "[SERVER] (libpng) " << error_msg;
 }
 
 // _____________________________________________________________________________
@@ -1209,11 +1210,14 @@ void Server::clearOldSessions() const {
 
     std::vector<std::string> toDel;
 
-    for (const auto& i : _rs) {
-      if (std::chrono::duration_cast<std::chrono::minutes>(
-              std::chrono::system_clock::now() - i.second->createdAt())
-              .count() >= 1) {
-        toDel.push_back(i.first);
+    {
+      std::lock_guard<std::mutex> guard(_m);
+      for (const auto& i : _rs) {
+        if (std::chrono::duration_cast<std::chrono::minutes>(
+                std::chrono::system_clock::now() - i.second->createdAt())
+                .count() >= 1) {
+          toDel.push_back(i.first);
+        }
       }
     }
 
@@ -1553,6 +1557,8 @@ heatmap_stamp_t* Server::rasterStamp(double res, double w, double h,
                                      double screenW, double screenH) const {
   if (w < 0) w = 0;
   if (h < 0) h = 0;
+  if (screenW < 0) screenW = 0;
+  if (screenH < 0) screenH = 0;
   if (isnan(w)) w = 0;
   if (isnan(h)) h = 0;
 

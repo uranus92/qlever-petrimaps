@@ -32,10 +32,7 @@ using util::LogLevel::WARN;
 void Requestor::request() {
   std::lock_guard<std::mutex> guard(_m);
 
-  if (_ready) {
-    // nothing to do
-    return;
-  }
+  if (_ready) return;
 
   if (!_cache->ready()) {
     throw std::runtime_error("Geom cache not ready");
@@ -245,7 +242,7 @@ void Requestor::request() {
     _lpgrid[geomColId] = petrimaps::Grid<util::geo::Point<uint8_t>, float>(
         GRID_SIZE, GRID_SIZE, fLineBbox);
 
-    std::exception_ptr ePtr;
+    std::exception_ptr ePtr1, ePtr2, ePtr3, ePtr4;
 
 #pragma omp parallel sections
     {
@@ -283,8 +280,7 @@ void Requestor::request() {
             try {
               checkMem(1, _maxMemory);
             } catch (...) {
-#pragma omp critical
-              { ePtr = std::current_exception(); }
+              ePtr1 = std::current_exception();
               break;
             }
           }
@@ -320,8 +316,7 @@ void Requestor::request() {
             try {
               checkMem(1, _maxMemory);
             } catch (...) {
-#pragma omp critical
-              { ePtr = std::current_exception(); }
+              ePtr2 = std::current_exception();
               break;
             }
           }
@@ -348,8 +343,7 @@ void Requestor::request() {
             try {
               checkMem(1, _maxMemory);
             } catch (...) {
-#pragma omp critical
-              { ePtr = std::current_exception(); }
+              ePtr3 = std::current_exception();
               break;
             }
           }
@@ -418,8 +412,7 @@ void Requestor::request() {
             try {
               checkMem(1, _maxMemory);
             } catch (...) {
-#pragma omp critical
-              { ePtr = std::current_exception(); }
+              ePtr4 = std::current_exception();
               break;
             }
           }
@@ -427,9 +420,11 @@ void Requestor::request() {
       }
     }
 
-    if (ePtr) {
-      std::rethrow_exception(ePtr);
-    }
+    // unroll exceptions
+    if (ePtr1) std::rethrow_exception(ePtr1);
+    if (ePtr2) std::rethrow_exception(ePtr2);
+    if (ePtr3) std::rethrow_exception(ePtr3);
+    if (ePtr4) std::rethrow_exception(ePtr4);
   }
 
   _ready = true;
@@ -591,18 +586,18 @@ const ResObj Requestor::getNearest(size_t fieldId, util::geo::DPoint rp,
 
 #pragma omp parallel for num_threads(NUM_THREADS) schedule(static)
       for (size_t idx = 0; idx < ret.size(); idx++) {
-        auto i = ret[idx];
+        auto oid = ret[idx];
         util::geo::FPoint p;
-        if (i >= _objects[fieldId].size() + _dynamicPoints[fieldId].size()) {
+        if (oid >= _objects[fieldId].size() + _dynamicPoints[fieldId].size()) {
           size_t cid =
-              i - _objects[fieldId].size() - _dynamicPoints[fieldId].size();
+              oid - _objects[fieldId].size() - _dynamicPoints[fieldId].size();
           auto dp = clusterGeom(fieldId, cid, res);
           p = {dp.getX(), dp.getY()};
         } else {
-          if (i < _objects[fieldId].size())
-            p = _cache->getPoints()[_objects[fieldId][i].first];
+          if (oid < _objects[fieldId].size())
+            p = _cache->getPoints()[_objects[fieldId][oid].first];
           else
-            p = _dynamicPoints[fieldId][i - _objects[fieldId].size()].first;
+            p = _dynamicPoints[fieldId][oid - _objects[fieldId].size()].first;
         }
 
         if (!util::geo::contains(p, fbox)) continue;
@@ -610,7 +605,7 @@ const ResObj Requestor::getNearest(size_t fieldId, util::geo::DPoint rp,
         double d = util::geo::dist(p, frp);
 
         if (d < dBestVec[omp_get_thread_num()]) {
-          nearestVec[omp_get_thread_num()] = i;
+          nearestVec[omp_get_thread_num()] = oid;
           dBestVec[omp_get_thread_num()] = d;
         }
       }
@@ -624,12 +619,14 @@ const ResObj Requestor::getNearest(size_t fieldId, util::geo::DPoint rp,
 
 #pragma omp parallel for num_threads(NUM_THREADS) schedule(static)
       for (size_t idx = 0; idx < retL.size(); idx++) {
-        const auto& i = retL[idx];
-        auto lBox = _cache->getLineBBox(_objects[fieldId][i].first - I_OFFSET);
+        const auto& oid = retL[idx];
+        auto lBox =
+            _cache->getLineBBox(_objects[fieldId][oid].first - I_OFFSET);
         if (!util::geo::intersects(lBox, box)) continue;
 
-        size_t start = _cache->getLine(_objects[fieldId][i].first - I_OFFSET);
-        size_t end = _cache->getLineEnd(_objects[fieldId][i].first - I_OFFSET);
+        size_t start = _cache->getLine(_objects[fieldId][oid].first - I_OFFSET);
+        size_t end =
+            _cache->getLineEnd(_objects[fieldId][oid].first - I_OFFSET);
 
         // TODO _____________________ own function
         double d = std::numeric_limits<double>::infinity();
@@ -642,7 +639,8 @@ const ResObj Requestor::getNearest(size_t fieldId, util::geo::DPoint rp,
         double mainX = 0;
         double mainY = 0;
 
-        bool isArea = Requestor::isArea(_objects[fieldId][i].first - I_OFFSET);
+        bool isArea =
+            Requestor::isArea(_objects[fieldId][oid].first - I_OFFSET);
 
         util::geo::DLine areaBorder;
 
@@ -697,7 +695,7 @@ const ResObj Requestor::getNearest(size_t fieldId, util::geo::DPoint rp,
         }
 
         if (d < dBestLVec[omp_get_thread_num()]) {
-          nearestLVec[omp_get_thread_num()] = i;
+          nearestLVec[omp_get_thread_num()] = oid;
           dBestLVec[omp_get_thread_num()] = d;
         }
       }
@@ -885,6 +883,8 @@ util::geo::DLine Requestor::extractLineGeom(size_t lineId) const {
 bool Requestor::isArea(size_t lineId) const {
   size_t end = _cache->getLineEnd(lineId);
 
+  if (end == 0) return false;
+
   return isMCoord(_cache->getLinePoints()[end - 1].getX());
 }
 
@@ -1032,18 +1032,18 @@ std::vector<std::pair<util::geo::FPoint, ID_TYPE>> Requestor::getDynamicPoints(
     uint8_t type = (p.qid & (uint64_t(15) << 60)) >> 60;
     if (type != 8) continue;  // 8 = Geopoint in Qlever
 
-    uint64_t maskLat = 1073741823;
-    uint64_t maskLng = static_cast<uint64_t>(1073741823) << 30;
+    uint64_t maskLng = 1073741823;
+    uint64_t maskLat = static_cast<uint64_t>(1073741823) << 30;
 
-    auto lat =
-        ((static_cast<double>((p.qid & maskLat)) / maskLat) * 2 * 180.0) -
-        180.0;
     auto lng =
-        ((static_cast<double>((p.qid & maskLng) >> 30) / maskLat) * 2 * 90.0) -
+        ((static_cast<double>((p.qid & maskLng)) / maskLng) * 2 * 180.0) -
+        180.0;
+    auto lat =
+        ((static_cast<double>((p.qid & maskLat) >> 30) / maskLng) * 2 * 90.0) -
         90.0;
 
     ret.push_back(
-        {util::geo::latLngToWebMerc(util::geo::FPoint{lat, lng}), p.id});
+        {util::geo::latLngToWebMerc(util::geo::FPoint{lng, lat}), p.id});
   }
 
   return ret;
