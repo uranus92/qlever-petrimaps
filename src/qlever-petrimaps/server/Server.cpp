@@ -110,7 +110,26 @@ util::http::Answer Server::handle(const util::http::Req& req, int con) const {
       a.params["Cache-Control"] = "public, max-age=10000";
     } else if (cmd == "/heatmap") {
       a = handleHeatMapReq(params, con);
-    } else {
+    } else if (cmd.find("/tms/") == 0){
+      std::string tmsPath = cmd.substr(5);
+      auto parts = util::split(tmsPath, '/');
+
+      if (parts.size()!= 5){
+        throw std::invalid_argument("Invalid TMS request.");
+      }
+      if (parts[4].size() < 5 || parts[4].substr(parts[4].size() - 4) != ".png"){
+        throw std::invalid_argument("Invalid TMS request.");
+      }
+
+      params["layers"] = parts[0];
+      params["styles"] = parts[1];
+      params["x"] = parts[2];
+      params["y"] = parts[3];
+      params["z"] = parts[4].substr(0, parts[4].size() - 4);
+
+      a = handleTMSReq(params, con);
+    } 
+    else {
       a = util::http::Answer("404 Not Found", "dunno");
     }
   } catch (const std::runtime_error& e) {
@@ -188,6 +207,25 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
 
   double res = mercH / h;
 
+  // tmp: log request parameters
+  LOG(INFO) << "[SERVER] Heat request style="
+            << (style == OBJECTS ? "objects" : "heatmap")
+            << " width=" << w
+            << " height=" << h
+            << " bbox=(" << x1 << "," << y1 << "," << x2 << "," << y2 << ")";
+
+  LOG(INFO) << "[SERVER] Session point bbox=("
+            << r->getPointGrid().getBBox().getLowerLeft().getX() << ","
+            << r->getPointGrid().getBBox().getLowerLeft().getY() << ") -> ("
+            << r->getPointGrid().getBBox().getUpperRight().getX() << ","
+            << r->getPointGrid().getBBox().getUpperRight().getY() << ")";
+
+  LOG(INFO) << "[SERVER] Session line bbox=("
+            << r->getLineGrid().getBBox().getLowerLeft().getX() << ","
+            << r->getLineGrid().getBBox().getLowerLeft().getY() << ") -> ("
+            << r->getLineGrid().getBBox().getUpperRight().getX() << ","
+            << r->getLineGrid().getBBox().getUpperRight().getY() << ")";
+
   heatmap_t* hm = heatmap_new(w, h);
 
   double realCellSize = r->getPointGrid().getCellWidth();
@@ -209,6 +247,9 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
   // initialize vectors to 0
   for (size_t i = 0; i < NUM_THREADS; i++) points2[i].resize(w * h, 0);
 
+  size_t debugPointHits = 0;
+  size_t debugLineHits = 0;
+  size_t debugWeightedPixels = 0;
   // POINTS
   if (intersects(r->getPointGrid().getBBox(), fbbox)) {
     LOG(INFO) << "[SERVER] Looking up display points...";
@@ -245,6 +286,7 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
           int ppy = h - ((p.getY() - bbox.getLowerLeft().getY()) / mercH) * h;
 
           drawPoint(points[0], points2[0], px, py, w, h, style, 1);
+          debugPointHits++;
           drawLine(image.data(), ppx, ppy, px, py, w, h);
         } else {
           if (i >= objs.size() + dynPoints.size())
@@ -262,6 +304,7 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
           int py = h - ((p.getY() - bbox.getLowerLeft().getY()) / mercH) * h;
 
           drawPoint(points[0], points2[0], px, py, w, h, style, 1);
+          debugPointHits++;
         }
       }
     } else {
@@ -296,6 +339,7 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
             drawPoint(points[omp_get_thread_num()],
                       points2[omp_get_thread_num()], px, py, w, h, style,
                       cell->size());
+            debugPointHits++;
           } else {
             for (auto i : *cell) {
               if (i >= r->getObjects().size() + r->getDynamicPoints().size()) {
@@ -315,6 +359,7 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
                   h - ((p.getY() - bbox.getLowerLeft().getY()) / mercH) * h;
               drawPoint(points[omp_get_thread_num()],
                         points2[omp_get_thread_num()], px, py, w, h, style, 1);
+              debugPointHits++;
             }
           }
         }
@@ -404,6 +449,7 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
           if (px >= 0 && py >= 0 && px < w && py < h) {
             if (points2[0][w * py + px] == 0) points[0].push_back(w * py + px);
             points2[0][py * w + px] += 1;
+            debugLineHits++;
           }
         }
       }
@@ -436,6 +482,7 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
               if (points2[omp_get_thread_num()][w * py + px] == 0)
                 points[omp_get_thread_num()].push_back(w * py + px);
               points2[omp_get_thread_num()][py * w + px] += cell->size();
+              debugLineHits++;
             }
           } else {
             for (const auto& p : *cell) {
@@ -458,7 +505,15 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
       }
     }
   }
+  // tmp: log request parameters
+  for (size_t i = 0; i < NUM_THREADS; i++) {
+    debugWeightedPixels += points[i].size();
+  }
 
+  LOG(INFO) << "[SERVER] Debug point hits = " << debugPointHits;
+  LOG(INFO) << "[SERVER] Debug line hits = " << debugLineHits;
+  LOG(INFO) << "[SERVER] Debug nonzero pixels = " << debugWeightedPixels;
+  
   LOG(INFO) << "[SERVER] Adding points to heatmap...";
 
   if (style == OBJECTS) {
@@ -498,6 +553,19 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
   } else {
     heatmap_render_to(hm, heatmap_cs_Spectral_mixed_exp, &image[0]);
   }
+  // tmp: log request parameters
+  size_t debugVisiblePixels = 0;
+  unsigned char debugMaxAlpha = 0;
+
+  for (size_t i = 0; i < image.size() / 4; i++) {
+    unsigned char a = image[i * 4 + 3];
+    if (a > 0) debugVisiblePixels++;
+    if (a > debugMaxAlpha) debugMaxAlpha = a;
+  }
+
+  LOG(INFO) << "[SERVER] Debug visible pixels = " << debugVisiblePixels;
+  LOG(INFO) << "[SERVER] Debug max alpha = "
+            << static_cast<int>(debugMaxAlpha);
 
   heatmap_free(hm);
 
@@ -516,7 +584,7 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
   // point 7
 
   std::stringstream ss;
-  ss << "HTTP/1.1 200 OK" << aw.status << "\r\n";
+  ss << "HTTP/1.1" << aw.status << "\r\n";
   for (const auto& kv : aw.params)
     ss << kv.first << ": " << kv.second << "\r\n";
 
@@ -541,6 +609,90 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
   LOG(INFO) << "[SERVER] ...done";
 
   return aw;
+}
+
+// _____________________________________________________________________________
+util::http::Answer Server::handleTMSReq(const Params& pars, int sock) const{
+if (pars.count("layers") == 0 || pars.find("layers")->second.empty())
+  throw std::invalid_argument("No layer id specified.");
+
+if (pars.count("styles") == 0 || pars.find("styles")->second.empty())
+  throw std::invalid_argument("No style specified.");
+
+if (pars.count("x") == 0 || pars.find("x")->second.empty())
+  throw std::invalid_argument("No x specified.");
+
+if (pars.count("y") == 0 || pars.find("y")->second.empty())
+  throw std::invalid_argument("No y specified.");
+
+if (pars.count("z") == 0 || pars.find("z")->second.empty())
+  throw std::invalid_argument("No z specified.");
+
+std::string id = pars.find("layers")->second;
+std::string styleStr = pars.find("styles")->second;
+
+int x = atoi(pars.find("x")->second.c_str());
+int y = atoi(pars.find("y")->second.c_str());
+int z = atoi(pars.find("z")->second.c_str());
+
+if (styleStr != "heatmap" && styleStr != "objects")
+  throw std::invalid_argument("Invalid style specified.");
+
+if (x < 0 || y < 0 || z < 0)
+  throw std::invalid_argument("Invalid tile coordinates.");
+
+  if (z >= 31)
+    throw std::invalid_argument("Zoom level too large.");
+  
+  uint64_t tilesPerAxis = 1ULL << z;
+  if (static_cast<uint64_t>(x) >= tilesPerAxis ||
+      static_cast<uint64_t>(y) >= tilesPerAxis) {
+        throw std::invalid_argument("Tile coordinates out of ranges.");
+  }
+  
+  const double WEBMERC_MIN = -20037508.342789244;
+  const double WEBMERC_MAX = 20037508.342789244;
+  const double WORLD_SIZE = WEBMERC_MAX - WEBMERC_MIN;
+
+  // TMS has y=0 at the bottom, we have it at the top
+  int xyzY = static_cast<int>(tilesPerAxis - 1 - y); 
+
+  double tileSize = WORLD_SIZE / static_cast<double>(tilesPerAxis);
+  
+  double x1 = WEBMERC_MIN + x * tileSize;
+  double x2 = WEBMERC_MIN + (x + 1) * tileSize;
+
+  double yTop = WEBMERC_MAX - xyzY * tileSize;
+  double yBottom = WEBMERC_MAX - (xyzY + 1) * tileSize;
+
+  std::stringstream bboxSs;
+  bboxSs << std::setprecision(15)
+         << x1 << "," << yBottom << "," << x2 << "," << yTop;
+
+  Params heatPars;
+  heatPars["layers"] = id;
+  heatPars["styles"] = styleStr;
+  heatPars["bbox"] = bboxSs.str();
+  heatPars["width"] = "256";
+  heatPars["height"] = "256";
+
+  // tmp: log request parameters
+  LOG(INFO) << "[SERVER] TMS request: layer=" << id
+          << " style=" << styleStr
+          << " x=" << x
+          << " y=" << y
+          << " z=" << z;
+
+  LOG(INFO) << "[SERVER] TMS bbox = " << bboxSs.str();
+  LOG(INFO) << "[SERVER] TMS tilesPerAxis = " << tilesPerAxis;
+  LOG(INFO) << "[SERVER] TMS xyzY = " << xyzY;
+  LOG(INFO) << "[SERVER] TMS tileSize = " << tileSize;
+  LOG(INFO) << "[SERVER] TMS bounds x1=" << x1
+          << " yBottom=" << yBottom
+          << " x2=" << x2
+          << " yTop=" << yTop;
+
+return handleHeatMapReq(heatPars, sock);
 }
 
 // _____________________________________________________________________________
