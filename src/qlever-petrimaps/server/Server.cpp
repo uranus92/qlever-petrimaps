@@ -584,7 +584,9 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
   // point 7
 
   std::stringstream ss;
-  ss << "HTTP/1.1" << aw.status << "\r\n";
+
+  ss << "HTTP/1.1 " << aw.status << "\r\n";
+
   for (const auto& kv : aw.params)
     ss << kv.first << ": " << kv.second << "\r\n";
 
