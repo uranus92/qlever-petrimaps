@@ -44,6 +44,16 @@ class Server : public util::http::Handler {
                                     const HeaderParams& headerPars) const;
   util::http::Answer handleHeatMapReq(const Params& pars, int sock) const;
   util::http::Answer handleTMSReq(const Params& pars, int sock) const;
+  util::http::Answer handleWMTSReq(const Params& pars, int sock) const;
+  util::http::Answer handleWMTSGetTileReq(const Params& pars, int sock) const;
+  util::http::Answer handleWMTSGetCapabilitiesReq(const Params& pars) const;
+
+  std::string getHeatLayer(const std::string& layer) const;
+  static uint64_t validateTileCoordinates(int x, int y, int z);
+  static std::string getWebMercatorTileBbox(int x, int topOriginY, int z);
+  static std::string xmlEscape(const std::string& value);
+  static std::string urlEncode(const std::string& value);
+
   util::http::Answer handleQueryReq(const Params& pars,
                                     const HeaderParams& headerPars) const;
   util::http::Answer handleGeoJSONReq(const Params& pars) const;

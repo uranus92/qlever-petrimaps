@@ -148,7 +148,34 @@ util::http::Answer Server::handle(const util::http::Req& req, int con) const {
       params["z"] = parts[4].substr(0, parts[4].size() - 4);
 
       a = handleTMSReq(params, con);
-    } 
+    }
+    else if (cmd == "/wmts") {
+      a = handleWMTSReq(params, con);
+    }
+    else if (cmd.find("/wmts/") == 0){
+      std::string wmtsPath = cmd.substr(6);
+      auto parts = util::split(wmtsPath, '/');
+
+      if (parts.size() != 6) {
+        throw std::invalid_argument("Invalid RESTful WMTS request.");
+      }
+      if (parts[5].size() < 5 || parts[5].substr(parts[5].size() - 4) != ".png") {
+        throw std::invalid_argument("Invalid RESTful WMTS request.");
+      }
+
+      params["SERVICE"] = "WMTS";
+      params["REQUEST"] = "GetTile";
+      params["VERSION"] = "1.0.0";
+      params["LAYER"] = parts[0];
+      params["STYLE"] = parts[1];
+      params["FORMAT"] = "image/png";
+      params["TILEMATRIXSET"] = parts[2];
+      params["TILEMATRIX"] = parts[3];
+      params["TILEROW"] = parts[4];
+      params["TILECOL"] = parts[5].substr(0, parts[5].size() - 4);
+
+      a = handleWMTSGetTileReq(params, con);
+    }
     else {
       a = util::http::Answer("404 Not Found", "dunno");
     }
@@ -673,9 +700,357 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
 
   return aw;
 }
+// _____________________________________________________________________________
+util::http::Answer Server::handleWMTSReq(const Params& pars, int sock) const{
+  if (pars.count("REQUEST") == 0 || pars.find("REQUEST")->second.empty()) {
+    throw std::invalid_argument("No WMTS request specified.");
+  }
+
+  std::string request = pars.find("REQUEST")->second;
+
+  if (request == "GetTile") {
+    return handleWMTSGetTileReq(pars, sock);
+  }
+
+  if (request == "GetCapabilities") {
+    return handleWMTSGetCapabilitiesReq(pars);
+  }
+
+  throw std::invalid_argument("Unsupported WMTS request.");
+}
 
 // _____________________________________________________________________________
-util::http::Answer Server::handleTMSReq(const Params& pars, int sock) const{
+util::http::Answer Server::handleWMTSGetTileReq(const Params& pars, int sock) const {
+  UNUSED(sock);
+
+  if (pars.count("SERVICE") == 0 || pars.find("SERVICE")->second.empty()) {
+    throw std::invalid_argument("No WMTS service specified.");
+  }
+
+  if (pars.find("SERVICE")->second != "WMTS") {
+    throw std::invalid_argument("Invalid WMTS service.");
+  }
+
+  if (pars.count("VERSION") == 0 || pars.find("VERSION")->second.empty()) {
+    throw std::invalid_argument("No WMTS version specified.");
+  }
+
+  if (pars.find("VERSION")->second != "1.0.0") {
+    throw std::invalid_argument("Unsupported WMTS version.");
+  }
+
+  if (pars.count("LAYER") == 0 || pars.find("LAYER")->second.empty()) {
+    throw std::invalid_argument("No WMTS layer specified.");
+  }
+
+  if (pars.count("STYLE") == 0 || pars.find("STYLE")->second.empty()) {
+    throw std::invalid_argument("No WMTS style specified.");
+  }
+
+  if (pars.count("FORMAT") == 0 || pars.find("FORMAT")->second.empty()) {
+    throw std::invalid_argument("No WMTS format specified.");
+  }
+
+  if (pars.find("FORMAT")->second != "image/png") {
+    throw std::invalid_argument("Unsupported WMTS format.");
+  }
+
+  if (pars.count("TILEMATRIXSET") == 0 || pars.find("TILEMATRIXSET")->second.empty()) {
+    throw std::invalid_argument("No WMTS TileMatrixSet specified.");
+  }
+
+  if (pars.find("TILEMATRIXSET")->second != "WebMercatorQuad") {
+    throw std::invalid_argument("Unsupported WMTS TileMatrixSet.");
+  }
+
+  if (pars.count("TILEMATRIX") == 0 || pars.find("TILEMATRIX")->second.empty()) {
+    throw std::invalid_argument("No WMTS TileMatrix specified.");
+  }
+
+  if (pars.count("TILEROW") == 0 || pars.find("TILEROW")->second.empty()) {
+    throw std::invalid_argument("No WMTS TileRow specified.");
+  }
+  
+  if (pars.count("TILECOL") == 0 || pars.find("TILECOL")->second.empty()) {
+    throw std::invalid_argument("No WMTS TileCol specified.");
+  }
+
+  std::string id = pars.find("LAYER")->second;
+  std::string styleStr = pars.find("STYLE")->second;
+  std::string heatLayer = getHeatLayer(id);
+
+  int x = atoi(pars.find("TILECOL")->second.c_str());
+  int y = atoi(pars.find("TILEROW")->second.c_str());
+  int z = atoi(pars.find("TILEMATRIX")->second.c_str());
+
+  if (styleStr != "heatmap" && styleStr != "objects") {
+    throw std::invalid_argument("Invalid WMTS style specified.");
+  }
+
+  std::string bbox = getWebMercatorTileBbox(x, y, z); 
+  
+  Params heatPars;
+  heatPars["layers"] = heatLayer;
+  heatPars["styles"] = styleStr;
+  heatPars["bbox"] = bbox;
+  heatPars["width"] = "256";
+  heatPars["height"] = "256";
+
+  // tmp: log request parameters
+  LOG(INFO) << "[SERVER] WMTS GetTile request: layer=" << id
+            << " style=" << styleStr << " tileMatrix=" << z 
+            << " tileRow=" << y << " tileCol=" << x;
+  LOG(INFO) << " bbox=" << bbox;
+
+  return handleHeatMapReq(heatPars, sock);
+
+}
+
+// _____________________________________________________________________________
+util::http::Answer Server::handleWMTSGetCapabilitiesReq(const Params& pars) 
+    const {
+  if (pars.count("SERVICE") == 0 || pars.find("SERVICE")->second.empty()) {
+    throw std::invalid_argument("No WMTS service specified.");
+  }
+
+  if (pars.find("SERVICE")->second != "WMTS") {
+    throw std::invalid_argument("Invalid WMTS service.");
+  }
+
+  if (pars.count("VERSION") == 0 || pars.find("VERSION")->second.empty()) {
+    throw std::invalid_argument("No WMTS version specified.");
+  }
+
+  if (pars.find("VERSION")->second != "1.0.0") {
+    throw std::invalid_argument("Unsupported WMTS version.");
+  }
+
+  const double WEBMERC_MAX = 20037508.342789244;
+  const double WEBMERC_MIN = -20037508.342789244;
+  const double INITIAL_RESOLUTION = (WEBMERC_MAX - WEBMERC_MIN) / 256.0;
+  const int MAX_ZOOM = 30;
+
+  std::vector<std::string> layerIds;
+
+  {
+    std::lock_guard<std::mutex> guard(_m);
+
+    for (const auto& entry : _rs) {
+      const std::string& sessionId = entry.first;
+      const auto& reqor = entry.second;
+
+      const auto fields = reqor->getFields();
+      for (const auto& field : fields) {
+        layerIds.push_back(sessionId + "-" + field.geomField);
+      }
+    }
+  }
+
+  LOG(INFO) << "[SERVER] WMTS GetCapabilities with " << layerIds.size()
+          << " layers.";
+
+  std::stringstream xml;
+
+  xml << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+  xml << "<Capabilities "
+      << "xmlns=\"http://www.opengis.net/wmts/1.0\" "
+      << "xmlns:ows=\"http://www.opengis.net/ows/1.1\" "
+      << "xmlns:xlink=\"http://www.w3.org/1999/xlink\" "
+      << "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" "
+      << "version=\"1.0.0\">\n ";
+  
+  xml << "  <ows:ServiceIdentification>\n"
+      << "    <ows:Title>qlever-petrimaps WMTS Service</ows:Title>\n"
+      << "    <ows:Abstract>WMTS service for qlever-petrimaps</ows:Abstract>\n"
+      << "    <ows:ServiceType>OGC WMTS</ows:ServiceType>\n"
+      << "    <ows:ServiceTypeVersion>1.0.0</ows:ServiceTypeVersion>\n"
+      << "  </ows:ServiceIdentification>\n";
+  
+  xml << "  <ows:OperationsMetadata>\n";
+  xml << "    <ows:Operation name=\"GetCapabilities\">\n";
+  xml << "      <ows:DCP>\n";
+  xml << "        <ows:HTTP>\n";
+  xml << "          <ows:Get xlink:href=\"/wmts\" />\n";
+  xml << "        </ows:HTTP>\n";
+  xml << "      </ows:DCP>\n";
+  xml << "    </ows:Operation>\n";
+  xml << "    <ows:Operation name=\"GetTile\">\n";
+  xml << "      <ows:DCP>\n";
+  xml << "        <ows:HTTP>\n";
+  xml << "          <ows:Get xlink:href=\"/wmts\" />\n";
+  xml << "        </ows:HTTP>\n";
+  xml << "      </ows:DCP>\n";
+  xml << "    </ows:Operation>\n";
+  xml << "  </ows:OperationsMetadata>\n";
+  
+  xml << "  <Contents>\n";
+
+  for (const auto& layerId : layerIds) {
+
+    std::string escapedLayerId = xmlEscape(layerId);
+    std::string encodedLayerId = xmlEscape(urlEncode(layerId));
+
+    xml << "    <Layer>\n";
+    xml << "      <ows:Title>" << escapedLayerId << "</ows:Title>\n";
+    xml << "      <ows:Identifier>" << encodedLayerId << "</ows:Identifier>\n";
+    xml << "      <Style isDefault=\"true\">\n";
+    xml << "        <ows:Identifier>heatmap</ows:Identifier>\n";
+    xml << "      </Style>\n";
+    xml << "      <Style isDefault=\"false\">\n";
+    xml << "        <ows:Identifier>objects</ows:Identifier>\n";
+    xml << "      </Style>\n";
+    xml << "      <Format>image/png</Format>\n";
+    xml << "      <TileMatrixSetLink>\n";
+    xml << "        <TileMatrixSet>WebMercatorQuad</TileMatrixSet>\n";
+    xml << "      </TileMatrixSetLink>\n";
+
+    xml << "      <ResourceURL format=\"image/png\" resourceType=\"tile\" "
+        << "template=\"/wmts?SERVICE=WMTS&amp;REQUEST=GetTile&amp;VERSION=1.0.0"
+        << "&amp;LAYER=" << encodedLayerId
+        << "&amp;STYLE={Style}"
+        << "&amp;FORMAT=image/png"
+        << "&amp;TILEMATRIXSET=WebMercatorQuad"
+        << "&amp;TILEMATRIX={TileMatrix}"
+        << "&amp;TILEROW={TileRow}"
+        << "&amp;TILECOL={TileCol}\" />\n";
+    xml << "    </Layer>\n";
+  }
+
+  xml << "    <TileMatrixSet>\n";
+  xml << "      <ows:Identifier>WebMercatorQuad</ows:Identifier>\n";
+  xml << "      <ows:SupportedCRS>urn:ogc:def:crs:EPSG::3857</ows:SupportedCRS>\n";
+
+  for (int z = 0; z <= MAX_ZOOM; z++) {
+    uint64_t matrixSize = 1ULL << z;
+    double resolution =
+      INITIAL_RESOLUTION / static_cast<double>(matrixSize);
+    double scaleDenominator = resolution / 0.00028; 
+    // 0.28 mm pixel size as per OGC standard
+
+    xml << "      <TileMatrix>\n";
+    xml << "        <ows:Identifier>" << z << "</ows:Identifier>\n";
+    xml << "        <ScaleDenominator>" << std::setprecision(15)
+        << scaleDenominator << "</ScaleDenominator>\n";
+    xml << "        <TopLeftCorner>" << WEBMERC_MIN << " " << WEBMERC_MAX
+        << "</TopLeftCorner>\n";
+    xml << "        <TileWidth>256</TileWidth>\n";
+    xml << "        <TileHeight>256</TileHeight>\n";
+    xml << "        <MatrixWidth>" << matrixSize << "</MatrixWidth>\n";
+    xml << "        <MatrixHeight>" << matrixSize << "</MatrixHeight>\n";
+    xml << "      </TileMatrix>\n";
+}
+
+xml << "    </TileMatrixSet>\n";
+  xml << "  </Contents>\n";
+
+  xml << "</Capabilities>\n";
+
+
+  util::http::Answer answ("200 OK", xml.str());
+  answ.params["Content-Type"] = "application/xml; charset=UTF-8";
+  answ.params["Cache-Control"] = "no-cache";
+
+  return answ;
+}
+
+// _____________________________________________________________________________
+std::string Server::getHeatLayer(const std::string& layer) const {
+  std::string heatLayer = layer;
+
+  if (layer.find('-') == std::string::npos) {
+    std::shared_ptr<Requestor> reqor;
+    {
+      std::lock_guard<std::mutex> guard(_m);
+      if (!_rs.count(layer)) {
+        throw std::invalid_argument("Session not found.");
+      }
+      reqor = _rs[layer];
+    }
+
+    const auto fields = reqor->getFields();
+    if (fields.empty()) {
+      throw std::invalid_argument("No fields found for session.");
+    }
+  
+    heatLayer = layer + "-" + fields[0].geomField;
+  }
+  return heatLayer;
+}
+
+// _____________________________________________________________________________
+uint64_t Server::validateTileCoordinates(int x, int y, int z) {
+  if (x < 0 || y < 0 || z < 0)
+    throw std::invalid_argument("Invalid tile coordinates.");
+
+  if (z >= 31)
+    throw std::invalid_argument("Zoom level too large.");
+  
+  uint64_t tilesPerAxis = 1ULL << z;
+  if (static_cast<uint64_t>(x) >= tilesPerAxis ||
+      static_cast<uint64_t>(y) >= tilesPerAxis) {
+        throw std::invalid_argument("Tile coordinates out of ranges.");
+  }
+  return tilesPerAxis;
+}
+
+// _____________________________________________________________________________
+std::string Server::getWebMercatorTileBbox(int x, int topOriginY, int z) {
+  uint64_t tilesPerAxis = validateTileCoordinates(x, topOriginY, z);
+
+  const double WEBMERC_MIN = -20037508.342789244;
+  const double WEBMERC_MAX = 20037508.342789244;
+  const double WORLD_SIZE = WEBMERC_MAX - WEBMERC_MIN;
+
+  double tileSize = WORLD_SIZE / static_cast<double>(tilesPerAxis);
+
+  double x1 = WEBMERC_MIN + x * tileSize;
+  double x2 = WEBMERC_MIN + (x + 1) * tileSize;
+
+  double yTop = WEBMERC_MAX - topOriginY * tileSize;
+  double yBottom = WEBMERC_MAX - (topOriginY + 1) * tileSize;
+
+  std::stringstream bboxSs;
+  bboxSs << std::setprecision(15)
+         << x1 << "," << yBottom << "," << x2 << "," << yTop;
+
+  return bboxSs.str();
+}
+
+// _____________________________________________________________________________
+std::string Server::xmlEscape(const std::string& value) {
+  std::string escaped;
+  for (char c : value) {
+    switch (c) {
+      case '&': escaped += "&amp;"; break;
+      case '<': escaped += "&lt;"; break;
+      case '>': escaped += "&gt;"; break;
+      case '"': escaped += "&quot;"; break;
+      case '\'': escaped += "&apos;"; break;
+      default: escaped += c; break;
+    }
+  }
+  return escaped;
+}
+
+// _____________________________________________________________________________
+std::string Server::urlEncode(const std::string& value) {
+  std::stringstream encoded;
+
+  for (unsigned char c : value) {
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+        (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~') {
+      encoded << c;
+    } else {
+      encoded << '%' << std::uppercase << std::hex 
+              << std::setw(2) << std::setfill('0') << static_cast<int>(c)
+              << std::nouppercase << std::dec;
+    }
+  }
+  return encoded.str();
+}
+
+// _____________________________________________________________________________
+util::http::Answer Server::handleTMSReq(const Params& pars, int sock) const {
 if (pars.count("layers") == 0 || pars.find("layers")->second.empty())
   throw std::invalid_argument("No layer id specified.");
 
@@ -693,6 +1068,7 @@ if (pars.count("z") == 0 || pars.find("z")->second.empty())
 
 std::string id = pars.find("layers")->second;
 std::string styleStr = pars.find("styles")->second;
+std::string heatLayer = getHeatLayer(id);
 
 int x = atoi(pars.find("x")->second.c_str());
 int y = atoi(pars.find("y")->second.c_str());
@@ -701,59 +1077,16 @@ int z = atoi(pars.find("z")->second.c_str());
 if (styleStr != "heatmap" && styleStr != "objects")
   throw std::invalid_argument("Invalid style specified.");
 
-if (x < 0 || y < 0 || z < 0)
-  throw std::invalid_argument("Invalid tile coordinates.");
+uint64_t tilesPerAxis = validateTileCoordinates(x, y, z);
+int topOriginY = static_cast<int>(tilesPerAxis - 1 - y);
+std::string bbox = getWebMercatorTileBbox(x, topOriginY, z);
 
-  if (z >= 31)
-    throw std::invalid_argument("Zoom level too large.");
-  
-  uint64_t tilesPerAxis = 1ULL << z;
-  if (static_cast<uint64_t>(x) >= tilesPerAxis ||
-      static_cast<uint64_t>(y) >= tilesPerAxis) {
-        throw std::invalid_argument("Tile coordinates out of ranges.");
-  }
-  
-  const double WEBMERC_MIN = -20037508.342789244;
-  const double WEBMERC_MAX = 20037508.342789244;
-  const double WORLD_SIZE = WEBMERC_MAX - WEBMERC_MIN;
-
-  // TMS has y=0 at the bottom, we have it at the top
-  int xyzY = static_cast<int>(tilesPerAxis - 1 - y); 
-
-  double tileSize = WORLD_SIZE / static_cast<double>(tilesPerAxis);
-  
-  double x1 = WEBMERC_MIN + x * tileSize;
-  double x2 = WEBMERC_MIN + (x + 1) * tileSize;
-
-  double yTop = WEBMERC_MAX - xyzY * tileSize;
-  double yBottom = WEBMERC_MAX - (xyzY + 1) * tileSize;
-
-  std::stringstream bboxSs;
-  bboxSs << std::setprecision(15)
-         << x1 << "," << yBottom << "," << x2 << "," << yTop;
-
-  Params heatPars;
-  heatPars["layers"] = id;
-  heatPars["styles"] = styleStr;
-  heatPars["bbox"] = bboxSs.str();
-  heatPars["width"] = "256";
-  heatPars["height"] = "256";
-
-  // tmp: log request parameters
-  LOG(INFO) << "[SERVER] TMS request: layer=" << id
-          << " style=" << styleStr
-          << " x=" << x
-          << " y=" << y
-          << " z=" << z;
-
-  LOG(INFO) << "[SERVER] TMS bbox = " << bboxSs.str();
-  LOG(INFO) << "[SERVER] TMS tilesPerAxis = " << tilesPerAxis;
-  LOG(INFO) << "[SERVER] TMS xyzY = " << xyzY;
-  LOG(INFO) << "[SERVER] TMS tileSize = " << tileSize;
-  LOG(INFO) << "[SERVER] TMS bounds x1=" << x1
-          << " yBottom=" << yBottom
-          << " x2=" << x2
-          << " yTop=" << yTop;
+Params heatPars;
+heatPars["layers"] = heatLayer;
+heatPars["styles"] = styleStr;
+heatPars["bbox"] = bbox;
+heatPars["width"] = "256";
+heatPars["height"] = "256";
 
 return handleHeatMapReq(heatPars, sock);
 }

@@ -3,6 +3,8 @@ let curGeojson;
 let curGeojsonId = -1;
 let curGeojsonLayer = "";
 
+let currentTmsStyle = "heatmap";
+
 let urlParams = window.postParams;
 console.log(urlParams);
 let qleverBackend = urlParams["backend"];
@@ -185,24 +187,33 @@ function loadLayers(id, numObjects, autoThreshold, layers) {
 function getLayer(id, layer, autoThreshold) {
     console.log(layer);
     if (layer["style"] == "auto") {
-        const autoHeatmapLayer = L.nonTiledLayer.wms('heatmap', {
+        const autoHeatmapTmsStyle = layer["numobjects"] > autoThreshold
+            ? "heatmap"
+            : "objects";
+        const autoHeatmapRenderStyle = layer["numobjects"] > autoThreshold
+            ? "heatmap-" + layer["colorscheme"]
+            : "objects-" + layer["color"];
+
+        const autoHeatmapLayer = trackTmsStyle(L.nonTiledLayer.wms('heatmap', {
             minZoom: 0,
             maxZoom: 15,
             opacity: layer["numobjects"] > autoThreshold ? 0.8 : 0.9,
             layers: id + "-" + layer["geomfield"],
-            styles: layer["numobjects"] > autoThreshold ? ["heatmap-" + layer["colorscheme"]] : ["objects-" + layer["color"]],
+            styles: [autoHeatmapRenderStyle],
             format: 'image/png',
             transparent: true,
-        });
+        }), autoHeatmapTmsStyle);
 
-        const autoObjectLayer = L.nonTiledLayer.wms('heatmap', {
+        const autoObjectTmsStyle = "objects";
+
+        const autoObjectLayer = trackTmsStyle(L.nonTiledLayer.wms('heatmap', {
             minZoom: 16,
             maxZoom: 19,
             opacity: 0.9,
             layers: id + "-" + layer["geomfield"],
             styles: ["objects-" + layer["color"]],
             format: 'image/png'
-        });
+        }), autoObjectTmsStyle);
 
         return  { name: layer["name"], layer: L.layerGroup([autoHeatmapLayer, autoObjectLayer])};
     } else if (layer["style"] == "raster") {
@@ -216,7 +227,8 @@ function getLayer(id, layer, autoThreshold) {
             transparent: true
         })};
     } else if (layer["style"] == "heatmap") {
-        return { name: layer["name"], layer: L.nonTiledLayer.wms('heatmap', {
+        const tmsStyle = "heatmap";
+        return { name: layer["name"], layer: trackTmsStyle(L.nonTiledLayer.wms('heatmap', {
             minZoom: 0,
             maxZoom: 19,
             opacity: 0.8,
@@ -224,16 +236,17 @@ function getLayer(id, layer, autoThreshold) {
             styles: ["heatmap-" + layer["colorscheme"]],
             format: 'image/png',
             transparent: true
-        }) };
+        }), tmsStyle) };
     } else {
-        return { name: layer["name"], layer: L.nonTiledLayer.wms('heatmap', {
+        const tmsStyle = "objects";
+        return { name: layer["name"], layer: trackTmsStyle(L.nonTiledLayer.wms('heatmap', {
             minZoom: 0,
             maxZoom: 19,
             opacity: 0.9,
             layers: id + "-" + layer["geomfield"],
             styles: ["objects-" + layer["color"]],
             format: 'image/png'
-        })};
+        }), tmsStyle) };
     }
 
     return null;
@@ -353,49 +366,55 @@ function loadSimpleMap(id, numObjects, autoThreshold, layer) {
   const heatmapStyles = ["spectralexp", "spectral", "RdYlGn", "RdYlGnexp", "RdYlBu","RdYlBuexp", "w2b", "b2w", "RdGy","RdGyexp","YlOrRd","YlOrRdexp","Blues","Bluesexp","Greens","Greensexp","Greys","Greysexp","Oranges","Orangesexp","Reds", "Redsexp"];
 	let heatmapLayers = [];
 
-    for (const s of heatmapStyles) {
-		heatmapLayers.push({
-			name: s,
-			layer: L.nonTiledLayer.wms('heatmap', {
-				minZoom: 0,
-				maxZoom: 19,
-				opacity: 0.8,
-				layers: id + "-" + layer["geomfield"],
-				styles: ["heatmap-" + s],
-				format: 'image/png',
-				transparent: true,
-			})
-		});
-    	heatmapLayers[heatmapLayers.length - 1].layer.on('load', _onLayerLoad);
-	}
+	    for (const s of heatmapStyles) {
+            const style = "heatmap";
+			heatmapLayers.push({
+				name: s,
+				layer: trackTmsStyle(L.nonTiledLayer.wms('heatmap', {
+					minZoom: 0,
+					maxZoom: 19,
+					opacity: 0.8,
+					layers: id + "-" + layer["geomfield"],
+					styles: ["heatmap-" + s],
+					format: 'image/png',
+					transparent: true,
+				}), style)
+			});
+	    	heatmapLayers[heatmapLayers.length - 1].layer.on('load', _onLayerLoad);
+		}
+	
+        const objectsStyle = "objects";
+		const objectsLayer = trackTmsStyle(L.nonTiledLayer.wms('heatmap', {
+	        minZoom: 0,
+	        maxZoom: 19,
+	        opacity: 0.9,
+	        layers: id + "-" + layer["geomfield"],
+	        styles: ["objects-" + layer["color"]],
+	        format: 'image/png'
+	    }), objectsStyle);
 
-	const objectsLayer = L.nonTiledLayer.wms('heatmap', {
-        minZoom: 0,
-        maxZoom: 19,
-        opacity: 0.9,
-        layers: id + "-" + layer["geomfield"],
-        styles: ["objects-" + layer["color"]],
-        format: 'image/png'
-    });
-
-    const autoHeatmapLayer = L.nonTiledLayer.wms('heatmap', {
+    const autoHeatmapTmsStyle = numObjects > autoThreshold ? "heatmap" : "objects";
+    const autoHeatmapRenderStyle = numObjects > autoThreshold ? "heatmap-spectralexp" : "objects-" + layer["color"];
+    const autoHeatmapLayer = trackTmsStyle(L.nonTiledLayer.wms('heatmap', {
         minZoom: 0,
         maxZoom: 15,
         opacity: numObjects > autoThreshold ? 0.8 : 0.9,
         layers: id + "-" + layer["geomfield"],
-        styles: numObjects > autoThreshold ? ["heatmap-spectralexp"] : ["objects-" + layer["color"]],
+        styles: [autoHeatmapRenderStyle],
         format: 'image/png',
         transparent: true,
-    });
+    }), autoHeatmapTmsStyle);
 
-    const autoObjectLayer = L.nonTiledLayer.wms('heatmap', {
+    const autoObjectTmsStyle = "objects";
+    const autoObjectLayer = trackTmsStyle(L.nonTiledLayer.wms('heatmap', {
         minZoom: 16,
         maxZoom: 19,
         opacity: 0.9,
         layers: id + "-" + layer["geomfield"],
         styles: ["objects-" + layer["color"]],
         format: 'image/png'
-    });
+    }), autoObjectTmsStyle);
+
 	const autoLayerGroup = L.layerGroup([autoHeatmapLayer, autoObjectLayer]);
 
     objectsLayer.on('load', _onLayerLoad);
@@ -490,6 +509,29 @@ function _onLayerLoad(e) {
     document.getElementById("msg").style.display = "none";
 }
 
+function buildTmsUrl() {
+    if (!sessionId) return null;
+    return `${window.location.origin}/tms/${sessionId}/${currentTmsStyle}/{x}/{y}/{z}.png`;
+}
+
+function trackTmsStyle(layer, style) {
+    layer.on("add", function() {
+        currentTmsStyle = style;
+    });
+    return layer;
+}
+
+function showTmsDialog(url, copied) {
+    document.getElementById("tms-code").textContent = url;
+    document.getElementById("tms-subtitle").textContent =
+        copied ? "Copied to clipboard" : "Copy failed - you can still copy it manually";
+    document.getElementById("tms-modal").style.display = "flex";
+}
+
+function hideTmsDialog() {
+    document.getElementById("tms-modal").style.display = "none";
+}
+
 document.getElementById("ex-geojson").onclick = function() {
     if (!sessionId) return;
     let a = document.createElement("a");
@@ -510,4 +552,32 @@ document.getElementById("ex-csv").onclick = function() {
     a.href = qleverBackend + "?query=" + encodeURIComponent(query) + "&action=csv_export";
     a.setAttribute("download", "export.csv");
     a.click();
+}
+
+document.getElementById("ex-tms").onclick = async function() {
+    const tmsUrl = buildTmsUrl();
+    if (!tmsUrl) return;
+
+    try {
+        await navigator.clipboard.writeText(tmsUrl);
+        showTmsDialog(tmsUrl, true);
+    }
+    catch (e) {
+        showTmsDialog(tmsUrl, false);
+    }
+}
+
+document.getElementById("tms-close").onclick = function() {
+    hideTmsDialog();
+}
+
+document.getElementById("tms-copy").onclick = async function() {
+    const url = document.getElementById("tms-code").textContent;
+    try {
+        await navigator.clipboard.writeText(url);
+        document.getElementById("tms-subtitle").textContent = "Copied to clipboard";
+    } catch (e) {
+        document.getElementById("tms-subtitle").textContent =
+            "Copy failed - please copy manually";
+    }
 }
