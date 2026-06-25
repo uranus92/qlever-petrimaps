@@ -681,8 +681,13 @@ util::http::Answer Server::handleWMTSGetTileReq(const Params& pars, int sock) co
   int y = atoi(pars.find("TILEROW")->second.c_str());
   int z = atoi(pars.find("TILEMATRIX")->second.c_str());
 
-  if (styleStr != "heatmap" && styleStr != "objects") {
-    throw std::invalid_argument("Invalid WMTS style specified.");
+  auto styleParts = util::split(styleStr, '-');
+
+  if (styleParts.empty() ||
+      (styleParts[0] != "heatmap" &&
+        styleParts[0] != "objects" &&
+        styleParts[0] != "raster")) {
+  throw std::invalid_argument("Invalid WMTS style specified.");
   }
 
   std::string bbox = getWebMercatorTileBbox(x, y, z); 
@@ -728,8 +733,13 @@ util::http::Answer Server::handleWMTSGetCapabilitiesReq(const Params& pars)
   const double INITIAL_RESOLUTION = (WEBMERC_MAX - WEBMERC_MIN) / 256.0;
   const int MAX_ZOOM = 30;
 
-  std::vector<std::string> layerIds;
+  auto formatStyleNumber = [](double value) {
+    std::ostringstream out;
+    out << value;
+    return out.str();
+  };
 
+  std::vector<std::pair<std::string, std::vector<std::string>>> wmtsLayers;
   {
     std::lock_guard<std::mutex> guard(_m);
 
@@ -739,12 +749,30 @@ util::http::Answer Server::handleWMTSGetCapabilitiesReq(const Params& pars)
 
       const auto fields = reqor->getFields();
       for (const auto& field : fields) {
-        layerIds.push_back(sessionId + "-" + field.geomField);
+        std::string layerId = sessionId + "-" + field.geomField;
+        std::vector<std::string> styles;
+
+        if (field.style == "heatmap") {
+          styles.push_back("heatmap-" + field.colorscheme);
+        } else if (field.style == "objects") {
+          styles.push_back("objects-" + field.color);
+        } else if (field.style == "raster") {
+          styles.push_back("raster-" + formatStyleNumber(field.rasterW) + "x" +
+                           formatStyleNumber(field.rasterH) + "-" +
+                           field.colorscheme);
+        } else if (field.style == "auto") {
+          styles.push_back("heatmap-" + field.colorscheme);
+          styles.push_back("objects-" + field.color);
+        } else {
+          styles.push_back("heatmap-" + field.colorscheme);
+        }
+
+        wmtsLayers.emplace_back(layerId, styles);
       }
     }
   }
 
-  LOG(INFO) << "[SERVER] WMTS GetCapabilities with " << layerIds.size()
+  LOG(INFO) << "[SERVER] WMTS GetCapabilities with " << wmtsLayers.size()
           << " layers.";
 
   std::stringstream xml;
@@ -783,7 +811,9 @@ util::http::Answer Server::handleWMTSGetCapabilitiesReq(const Params& pars)
   
   xml << "  <Contents>\n";
 
-  for (const auto& layerId : layerIds) {
+  for (const auto& layerEntry : wmtsLayers) {
+    const auto& layerId = layerEntry.first;
+    const auto& styles = layerEntry.second;
 
     std::string escapedLayerId = xmlEscape(layerId);
     std::string encodedLayerId = xmlEscape(urlEncode(layerId));
@@ -791,12 +821,14 @@ util::http::Answer Server::handleWMTSGetCapabilitiesReq(const Params& pars)
     xml << "    <Layer>\n";
     xml << "      <ows:Title>" << escapedLayerId << "</ows:Title>\n";
     xml << "      <ows:Identifier>" << encodedLayerId << "</ows:Identifier>\n";
-    xml << "      <Style isDefault=\"true\">\n";
-    xml << "        <ows:Identifier>heatmap</ows:Identifier>\n";
-    xml << "      </Style>\n";
-    xml << "      <Style isDefault=\"false\">\n";
-    xml << "        <ows:Identifier>objects</ows:Identifier>\n";
-    xml << "      </Style>\n";
+    for (size_t i = 0; i < styles.size(); i++) {
+      std::string encodedStyle = xmlEscape(urlEncode(styles[i]));
+      xml << "      <Style isDefault=\"" << (i == 0 ? "true" : "false")
+          << "\">\n";
+      xml << "        <ows:Identifier>" << encodedStyle
+          << "</ows:Identifier>\n";
+      xml << "      </Style>\n";
+    }
     xml << "      <Format>image/png</Format>\n";
     xml << "      <TileMatrixSetLink>\n";
     xml << "        <TileMatrixSet>WebMercatorQuad</TileMatrixSet>\n";
@@ -972,8 +1004,14 @@ int x = atoi(pars.find("x")->second.c_str());
 int y = atoi(pars.find("y")->second.c_str());
 int z = atoi(pars.find("z")->second.c_str());
 
-if (styleStr != "heatmap" && styleStr != "objects")
+auto styleParts = util::split(styleStr, '-');
+
+if (styleParts.empty() ||
+    (styleParts[0] != "heatmap" &&
+     styleParts[0] != "objects" &&
+     styleParts[0] != "raster")) {
   throw std::invalid_argument("Invalid style specified.");
+}
 
 uint64_t tilesPerAxis = validateTileCoordinates(x, y, z);
 int topOriginY = static_cast<int>(tilesPerAxis - 1 - y);

@@ -3,7 +3,7 @@ let curGeojson;
 let curGeojsonId = -1;
 let curGeojsonLayer = "";
 
-let currentTmsStyle = "heatmap";
+let currentTileConfig = null;
 
 let urlParams = window.postParams;
 console.log(urlParams);
@@ -187,9 +187,8 @@ function loadLayers(id, numObjects, autoThreshold, layers) {
 function getLayer(id, layer, autoThreshold) {
     console.log(layer);
     if (layer["style"] == "auto") {
-        const autoHeatmapTmsStyle = layer["numobjects"] > autoThreshold
-            ? "heatmap"
-            : "objects";
+        const layerId = id + "-" + layer["geomfield"];
+        
         const autoHeatmapRenderStyle = layer["numobjects"] > autoThreshold
             ? "heatmap-" + layer["colorscheme"]
             : "objects-" + layer["color"];
@@ -198,55 +197,62 @@ function getLayer(id, layer, autoThreshold) {
             minZoom: 0,
             maxZoom: 15,
             opacity: layer["numobjects"] > autoThreshold ? 0.8 : 0.9,
-            layers: id + "-" + layer["geomfield"],
+            layers: layerId,
             styles: [autoHeatmapRenderStyle],
             format: 'image/png',
             transparent: true,
-        }), autoHeatmapTmsStyle);
+        }), layerId, autoHeatmapRenderStyle);
 
-        const autoObjectTmsStyle = "objects";
+        const autoObjectTmsStyle = "objects-" + layer["color"];
 
         const autoObjectLayer = trackTmsStyle(L.nonTiledLayer.wms('heatmap', {
             minZoom: 16,
             maxZoom: 19,
             opacity: 0.9,
-            layers: id + "-" + layer["geomfield"],
-            styles: ["objects-" + layer["color"]],
+            layers: layerId,
+            styles: [autoObjectTmsStyle],
             format: 'image/png'
-        }), autoObjectTmsStyle);
+        }), layerId, autoObjectTmsStyle);
 
         return  { name: layer["name"], layer: L.layerGroup([autoHeatmapLayer, autoObjectLayer])};
     } else if (layer["style"] == "raster") {
-        return  { name: layer["name"], layer: L.nonTiledLayer.wms('heatmap', {
+        const layerId = id + "-" + layer["geomfield"];
+        const renderStyle = "raster-" + layer["rasterw"]
+                    + "x" + layer["rasterh"] + "-" + layer["colorscheme"];
+        return  { name: layer["name"], layer: trackTmsStyle(L.nonTiledLayer.wms('heatmap', {
             minZoom: 0,
             maxZoom: 19,
             opacity: 0.8,
-            layers: id + "-" + layer["geomfield"],
-            styles: ["raster-" + layer["rasterw"] + "x" + layer["rasterh"] + "-" +  layer["colorscheme"]],
+            layers: layerId,
+            styles: [renderStyle],
             format: 'image/png',
             transparent: true
-        })};
+        }),
+        layerId,
+        renderStyle) };
     } else if (layer["style"] == "heatmap") {
-        const tmsStyle = "heatmap";
+        const layerId = id + "-" + layer["geomfield"];
+        const renderStyle = "heatmap-" + layer["colorscheme"];
         return { name: layer["name"], layer: trackTmsStyle(L.nonTiledLayer.wms('heatmap', {
             minZoom: 0,
             maxZoom: 19,
             opacity: 0.8,
-            layers: id + "-" + layer["geomfield"],
-            styles: ["heatmap-" + layer["colorscheme"]],
+            layers: layerId,
+            styles: [renderStyle],
             format: 'image/png',
             transparent: true
-        }), tmsStyle) };
+        }), layerId, renderStyle) };
     } else {
-        const tmsStyle = "objects";
+        const layerId = id + "-" + layer["geomfield"];
+        const renderStyle = "objects-" + layer["color"];
         return { name: layer["name"], layer: trackTmsStyle(L.nonTiledLayer.wms('heatmap', {
             minZoom: 0,
             maxZoom: 19,
             opacity: 0.9,
-            layers: id + "-" + layer["geomfield"],
-            styles: ["objects-" + layer["color"]],
+            layers: layerId,
+            styles: [renderStyle],
             format: 'image/png'
-        }), tmsStyle) };
+        }), layerId, renderStyle) };
     }
 
     return null;
@@ -366,54 +372,57 @@ function loadSimpleMap(id, numObjects, autoThreshold, layer) {
   const heatmapStyles = ["spectralexp", "spectral", "RdYlGn", "RdYlGnexp", "RdYlBu","RdYlBuexp", "w2b", "b2w", "RdGy","RdGyexp","YlOrRd","YlOrRdexp","Blues","Bluesexp","Greens","Greensexp","Greys","Greysexp","Oranges","Orangesexp","Reds", "Redsexp"];
 	let heatmapLayers = [];
 
-	    for (const s of heatmapStyles) {
-            const style = "heatmap";
+	    const layerId = id + "-" + layer["geomfield"];
+
+        for (const s of heatmapStyles) {
+            const renderstyle = "heatmap-" + s;
 			heatmapLayers.push({
 				name: s,
 				layer: trackTmsStyle(L.nonTiledLayer.wms('heatmap', {
 					minZoom: 0,
 					maxZoom: 19,
 					opacity: 0.8,
-					layers: id + "-" + layer["geomfield"],
-					styles: ["heatmap-" + s],
+					layers: layerId,
+					styles: [renderstyle],
 					format: 'image/png',
 					transparent: true,
-				}), style)
+				}), layerId, renderstyle)
 			});
 	    	heatmapLayers[heatmapLayers.length - 1].layer.on('load', _onLayerLoad);
 		}
 	
-        const objectsStyle = "objects";
+        const objectsStyle = "objects-" + layer["color"];
 		const objectsLayer = trackTmsStyle(L.nonTiledLayer.wms('heatmap', {
 	        minZoom: 0,
 	        maxZoom: 19,
 	        opacity: 0.9,
-	        layers: id + "-" + layer["geomfield"],
-	        styles: ["objects-" + layer["color"]],
+	        layers: layerId,
+	        styles: [objectsStyle],
 	        format: 'image/png'
-	    }), objectsStyle);
+	    }), layerId, objectsStyle);
 
-    const autoHeatmapTmsStyle = numObjects > autoThreshold ? "heatmap" : "objects";
-    const autoHeatmapRenderStyle = numObjects > autoThreshold ? "heatmap-spectralexp" : "objects-" + layer["color"];
+    const autoHeatmapRenderStyle = numObjects > autoThreshold 
+        ? "heatmap-spectralexp" 
+        : "objects-" + layer["color"];
     const autoHeatmapLayer = trackTmsStyle(L.nonTiledLayer.wms('heatmap', {
         minZoom: 0,
         maxZoom: 15,
         opacity: numObjects > autoThreshold ? 0.8 : 0.9,
-        layers: id + "-" + layer["geomfield"],
+        layers: layerId,
         styles: [autoHeatmapRenderStyle],
         format: 'image/png',
         transparent: true,
-    }), autoHeatmapTmsStyle);
+    }), layerId, autoHeatmapRenderStyle);
 
-    const autoObjectTmsStyle = "objects";
+    const autoObjectRenderStyle = "objects-" + layer["color"];
     const autoObjectLayer = trackTmsStyle(L.nonTiledLayer.wms('heatmap', {
         minZoom: 16,
         maxZoom: 19,
         opacity: 0.9,
-        layers: id + "-" + layer["geomfield"],
-        styles: ["objects-" + layer["color"]],
+        layers: layerId,
+        styles: [autoObjectRenderStyle],
         format: 'image/png'
-    }), autoObjectTmsStyle);
+    }), layerId, autoObjectRenderStyle);
 
 	const autoLayerGroup = L.layerGroup([autoHeatmapLayer, autoObjectLayer]);
 
@@ -510,13 +519,17 @@ function _onLayerLoad(e) {
 }
 
 function buildTmsUrl() {
-    if (!sessionId) return null;
-    return `${window.location.origin}/tms/${sessionId}/${currentTmsStyle}/{x}/{y}/{z}.png`;
+    if (!sessionId || !currentTileConfig) return null;
+    
+    const layerId = encodeURIComponent(currentTileConfig.layerId);
+    const style = encodeURIComponent(currentTileConfig.style);
+    
+    return `${window.location.origin}/tms/${layerId}/${style}/{x}/{y}/{z}.png`;
 }
 
-function trackTmsStyle(layer, style) {
+function trackTmsStyle(layer, layerId, style) {
     layer.on("add", function() {
-        currentTmsStyle = style;
+        currentTileConfig = {layerId: layerId, style: style};
     });
     return layer;
 }
