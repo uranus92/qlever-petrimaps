@@ -18,6 +18,7 @@
 #include <unordered_set>
 #include <vector>
 
+// clang-format off
 #include "3rdparty/heatmap.h"
 #include "3rdparty/colorschemes/Blues.h"
 #include "3rdparty/colorschemes/Greens.h"
@@ -32,9 +33,11 @@
 #include "3rdparty/colorschemes/YlOrRd.h"
 #include "3rdparty/colorschemes/gray.h"
 #include "3rdparty/json.hpp"
+// clang-format on
 #include "qlever-petrimaps/build.h"
 #include "qlever-petrimaps/example.h"
 #include "qlever-petrimaps/index.h"
+#include "qlever-petrimaps/server/RenderContext.h"
 #include "qlever-petrimaps/server/Requestor.h"
 #include "qlever-petrimaps/server/Server.h"
 #include "qlever-petrimaps/style.h"
@@ -307,9 +310,15 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
     std::lock_guard<std::mutex> guard(_m);
     bool has = _rs.count(id);
     if (!has) {
+      LOG(ERROR) << "Session " << id << " not found!";
       throw std::invalid_argument("Session not found");
     }
     r = _rs[id];
+  }
+
+  if (!r->ready()) {
+    LOG(ERROR) << "Session " << id << " not ready!";
+    throw std::invalid_argument("Session not ready.");
   }
 
   LOG(INFO) << "[SERVER] Begin heat for session " << id;
@@ -331,21 +340,15 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
   int w = atoi(pars.find("width")->second.c_str());
   int h = atoi(pars.find("height")->second.c_str());
 
-  if (w < 0 || w > 3000) throw std::invalid_argument("Invalid request");
-  if (h < 0 || h > 3000) throw std::invalid_argument("Invalid request");
+  if (w <= 0 || w > 3000) throw std::invalid_argument("Invalid request");
+  if (h <= 0 || h > 3000) throw std::invalid_argument("Invalid request");
 
   double res = mercH / h;
   size_t fid = r->getFieldId(field);
 
-  LOG(INFO) << "[SERVER] Heat request style="
-            << (style == OBJECTS ? "objects"
-                                 : (style == RASTER ? "raster" : "heatmap"))
-            << " width=" << w << " height=" << h << " bbox=(" << x1 << ","
-            << y1 << "," << x2 << "," << y2 << ")";
-
   checkMem(sizeof(float) * w * h, _maxMemory);
   heatmap_t* hm = heatmap_new(w, h);
-  hm->max = r->getValRange().second;
+  hm->max = r->getValRange(fid).second;
 
   double realCellSize = r->getPointGrid(fid).getCellWidth();
   double virtCellSize = res * 2.5;
@@ -358,58 +361,37 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
   LOG(INFO) << "[SERVER] Virt cell size: " << virtCellSize;
   LOG(INFO) << "[SERVER] Num virt cells: " << subCellSize * subCellSize;
 
-  checkMem(sizeof(unsigned char) * w * h * 4, _maxMemory);
-  std::vector<unsigned char> image(w * h * 4);
+  checkMem(sizeof(unsigned char) * w * h * 4 +
+               sizeof(unsigned char) * w * h * 4 * NUM_THREADS * 2,
+           _maxMemory);
+  RenderContext rcontext(w, h, style, NUM_THREADS);
 
-  std::vector<std::vector<uint32_t>> points(NUM_THREADS);
-  std::vector<std::vector<double>> weights(NUM_THREADS);
-  std::vector<std::vector<std::pair<float, float>>> rasterDims(NUM_THREADS);
-
-  // initialize vectors to 0
-  checkMem(sizeof(unsigned char) * w * h * 4, _maxMemory);
-  for (size_t i = 0; i < NUM_THREADS; i++) weights[i].resize(w * h, 0);
-
-  if (style == RASTER && parts.size() > 1) {
-    checkMem(sizeof(unsigned char) * w * h * 4, _maxMemory);
-    for (size_t i = 0; i < NUM_THREADS; i++)
-      rasterDims[i].resize(w * h, {1, 1});
-  }
-
-  size_t debugPointHits = 0;
-  size_t debugLineHits = 0;
-  size_t debugWeightedPixels = 0;
   // POINTS
   if (intersects(r->getPointGrid(fid).getBBox(), fbbox)) {
     LOG(INFO) << "[SERVER] Looking up display points...";
     if (res < THRESHOLD) {
       std::vector<ID_TYPE> ret;
 
-      // duplicates are not possible with points
+      // duplicates are not possible with points, so no sorting here
       r->getPointGrid(fid).get(fbbox, &ret);
 
       for (size_t j = 0; j < ret.size(); j++) {
         size_t oid = ret[j];
 
-        const auto& objs = r->getObjects(fid);
-        const auto& dynPoints = r->getDynamicPoints(fid);
-
         if (r->isCluster(fid, oid) && style == OBJECTS) {
-          size_t cid = oid - objs.size() - dynPoints.size();
-          oid = r->getCluster(fid, oid).first;
+          size_t refOid = r->getCluster(fid, oid).first;
 
-          FPoint p = r->getPoint(fid, oid);
+          FPoint p = r->getPoint(fid, refOid);
           if (!contains(p, fbbox)) continue;
 
-          const auto& cp = r->clusterGeom(fid, cid, res);
+          const auto& cp = r->clusterGeom(fid, oid, res);
 
           auto px = mercToPx(cp, orx, ory, mercW, mercH, w, h);
           auto ppx = mercToPx(p, orx, ory, mercW, mercH, w, h);
-          drawPoint(points[0], weights[0], rasterDims[0], px.getX(), px.getY(),
-                    w, h, style, r->getVal(fid, oid), rasterWidth,
-                    rasterHeight);
-          drawLine(image.data(), ppx.getX(), ppx.getY(), ppx.getX(), ppx.getY(),
-                   w, h);
-          debugPointHits++;
+
+          rcontext.drawPoint(0, px.getX(), px.getY(), w, h, r->getVal(fid, oid),
+                             0, 0);
+          rcontext.drawLine(px.getX(), px.getY(), ppx.getX(), ppx.getY(), w, h);
         } else {
           if (r->isCluster(fid, oid)) oid = r->getCluster(fid, oid).first;
 
@@ -417,16 +399,17 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
           if (!contains(p, fbbox)) continue;
 
           auto px = mercToPx(p, orx, ory, mercW, mercH, w, h);
-          if (style == RASTER) {
-            auto rasterMeta = r->getRasterMetas(fid, oid);
-            rasterWidth = rasterMeta.first;
-            rasterHeight = rasterMeta.second;
-          }
 
-          drawPoint(points[0], weights[0], rasterDims[0], px.getX(), px.getY(),
-                    w, h, style, r->getVal(fid, oid), rasterWidth,
-                    rasterHeight);
-          debugPointHits++;
+          if (style == RASTER) {
+            auto rasterMeta =
+                r->getRasterMetas(fid, oid, {rasterWidth, rasterHeight});
+            rcontext.drawPoint(0, px.getX(), px.getY(), w, h,
+                               r->getVal(fid, oid), rasterMeta.first,
+                               rasterMeta.second);
+          } else {
+            rcontext.drawPoint(0, px.getX(), px.getY(), w, h,
+                               r->getVal(fid, oid), 0, 0);
+          }
         }
       }
     } else {
@@ -440,6 +423,7 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
         for (size_t y = grid.getCellYFromY(iBox.getLowerLeft().getY());
              y <= grid.getCellYFromY(iBox.getUpperRight().getY()); y++) {
           if (x >= grid.getXWidth() || y >= grid.getYHeight()) continue;
+          size_t tid = omp_get_thread_num();
 
           auto cell = grid.getCell(x, y);
           if (!cell || cell->size() == 0) continue;
@@ -449,11 +433,9 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
             auto px =
                 mercToPx(cellBox.getLowerLeft(), orx, ory, mercW, mercH, w, h);
 
-            drawPoint(points[omp_get_thread_num()],
-                      weights[omp_get_thread_num()],
-                      rasterDims[omp_get_thread_num()], px.getX(), px.getY(), w,
-                      h, style, cell->size(), rasterWidth, rasterHeight);
-            debugPointHits++;
+            // TODO: just setting rasterWidth to 1x1 here is not correct
+            rcontext.drawPoint(tid, px.getX(), px.getY(), w, h,
+                               grid.getCellSum(x, y), 1, 1);
           } else {
             for (auto oid : *cell) {
               if (r->isCluster(fid, oid)) oid = r->getCluster(fid, oid).first;
@@ -462,15 +444,15 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
               auto px = mercToPx(p, orx, ory, mercW, mercH, w, h);
 
               if (style == RASTER) {
-                auto rasterMeta = r->getRasterMetas(fid, oid);
-                rasterWidth = rasterMeta.first;
-                rasterHeight = rasterMeta.second;
+                auto rasterMeta =
+                    r->getRasterMetas(fid, oid, {rasterWidth, rasterHeight});
+                rcontext.drawPoint(tid, px.getX(), px.getY(), w, h,
+                                   r->getVal(fid, oid), rasterMeta.first,
+                                   rasterMeta.second);
+              } else {
+                rcontext.drawPoint(tid, px.getX(), px.getY(), w, h,
+                                   r->getVal(fid, oid), 0, 0);
               }
-              drawPoint(
-                  points[omp_get_thread_num()], weights[omp_get_thread_num()],
-                  rasterDims[omp_get_thread_num()], px.getX(), px.getY(), w, h,
-                  style, r->getVal(fid, oid), rasterWidth, rasterHeight);
-              debugPointHits++;
             }
           }
         }
@@ -486,6 +468,7 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
     if (res < THRESHOLD) {
       std::vector<ID_TYPE> ret;
 
+      // retrieve line points
       lgrid.get(fbbox, &ret);
 
       // sort to avoid duplicates
@@ -502,14 +485,8 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
 
         for (const auto& p : denseLine) {
           auto pix = mercToPx(p, orx, ory, mercW, mercH, w, h);
-          int px = pix.getX();
-          int py = pix.getY();
-
-          if (px >= 0 && py >= 0 && px < w && py < h) {
-            if (weights[0][w * py + px] == 0) points[0].push_back(w * py + px);
-            weights[0][py * w + px] += r->getVal(fid, oid);
-            debugLineHits++;
-          }
+          rcontext.drawPoint(0, pix.getX(), pix.getY(), w, h,
+                             r->getVal(fid, oid), rasterWidth, rasterHeight);
         }
       }
     } else {
@@ -522,6 +499,7 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
         for (size_t y = lpgrid.getCellYFromY(iBox.getLowerLeft().getY());
              y <= lpgrid.getCellYFromY(iBox.getUpperRight().getY()); y++) {
           if (x >= lpgrid.getXWidth() || y >= lpgrid.getYHeight()) continue;
+          size_t tid = omp_get_thread_num();
 
           auto cell = lpgrid.getCell(x, y);
           if (!cell || cell->size() == 0) continue;
@@ -530,14 +508,9 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
           if (subCellSize == 1) {
             auto pix =
                 mercToPx(cellBox.getLowerLeft(), orx, ory, mercW, mercH, w, h);
-            int px = pix.getX();
-            int py = pix.getY();
-            if (px >= 0 && py >= 0 && px < w && py < h) {
-              if (weights[omp_get_thread_num()][w * py + px] == 0)
-                points[omp_get_thread_num()].push_back(w * py + px);
-              weights[omp_get_thread_num()][py * w + px] += cell->size();
-              debugLineHits++;
-            }
+            rcontext.drawPoint(tid, pix.getX(), pix.getY(), w, h,
+                               lpgrid.getCellSum(x, y), rasterWidth,
+                               rasterHeight);
           } else {
             for (const auto& p : *cell) {
               int px = ((cellBox.getLowerLeft().getX() + p.getX() * 256 -
@@ -548,83 +521,22 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
                              bbox.getLowerLeft().getY()) /
                             mercH) *
                                h;
-              if (px >= 0 && py >= 0 && px < w && py < h) {
-                if (weights[omp_get_thread_num()][w * py + px] == 0)
-                  points[omp_get_thread_num()].push_back(w * py + px);
-                weights[omp_get_thread_num()][py * w + px] += 1;
-              }
+              rcontext.drawPoint(tid, px, py, w, h, 1, rasterWidth,
+                                 rasterHeight);
             }
           }
         }
       }
     }
   }
-  // tmp: log request parameters
-  for (size_t i = 0; i < NUM_THREADS; i++) {
-    debugWeightedPixels += points[i].size();
-  }
-
-  LOG(INFO) << "[SERVER] Debug point hits = " << debugPointHits;
-  LOG(INFO) << "[SERVER] Debug line hits = " << debugLineHits;
-  LOG(INFO) << "[SERVER] Debug nonzero pixels = " << debugWeightedPixels;
-  
   LOG(INFO) << "[SERVER] Adding points to heatmap...";
-
-  if (style == RASTER) {
-    // first, aggregate possible stamp styles
-    std::map<std::pair<float, float>, heatmap_stamp_t*> stamps;
-    for (size_t i = 0; i < NUM_THREADS; i++) {
-      for (const auto& p : points[i]) {
-        if (stamps.count(rasterDims[i][p])) continue;
-        if (weights[i][p] == 0) continue;
-        stamps[rasterDims[i][p]] = rasterStamp(res, rasterDims[i][p].first,
-                                               rasterDims[i][p].second, w, h);
-      }
-    }
-
-    // now render per stamp style
-    for (auto stamp : stamps) {
-      for (size_t i = 0; i < NUM_THREADS; i++) {
-        for (const auto& p : points[i]) {
-          size_t y = p / w;
-          size_t x = p - (y * w);
-          if (weights[i][p] == 0) continue;
-          if (rasterDims[i][p] != stamp.first) continue;
-          if (!stamp.second) continue;
-          heatmap_add_weighted_point_with_stamp_no_aggreg(
-              hm, x, y, weights[i][p], stamp.second);
-        }
-      }
-    }
-
-    for (auto stamp : stamps) heatmap_stamp_free(stamp.second);
-  } else if (style == OBJECTS) {
-    auto stamp = heatmap_stamp_gen(3);
-    for (size_t i = 0; i < NUM_THREADS; i++) {
-      for (const auto& p : points[i]) {
-        size_t y = p / w;
-        size_t x = p - (y * w);
-        if (weights[i][p] > 0)
-          heatmap_add_weighted_point_with_stamp(hm, x, y, 1, stamp);
-      }
-    }
-    heatmap_stamp_free(stamp);
-  } else {
-    for (size_t i = 0; i < NUM_THREADS; i++) {
-      for (const auto& p : points[i]) {
-        size_t y = p / w;
-        size_t x = p - (y * w);
-        if (weights[i][p] > 0)
-          heatmap_add_weighted_point(hm, x, y, weights[i][p]);
-      }
-    }
-  }
-
+  rcontext.writeHeatmap(hm, res);
   LOG(INFO) << "[SERVER] ...done";
+
   LOG(INFO) << "[SERVER] Rendering heatmap...";
 
   if (style == RASTER) {
-    heatmap_render_to(hm, colorScheme, &image[0]);
+    heatmap_render_to(hm, colorScheme, &rcontext.getImage()[0]);
   } else if (style == OBJECTS) {
     unsigned char discrete_data[] = {
         0,         0,         0,         0,         0,         0,
@@ -637,24 +549,10 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
     heatmap_colorscheme_t discrete = {
         discrete_data, sizeof(discrete_data) / sizeof(discrete_data[0]) / 4};
 
-    heatmap_render_saturated_to(hm, &discrete, 1, &image[0]);
+    heatmap_render_saturated_to(hm, &discrete, 1, &rcontext.getImage()[0]);
   } else {
-    heatmap_render_to(hm, colorScheme, &image[0]);
+    heatmap_render_to(hm, colorScheme, &rcontext.getImage()[0]);
   }
-  // tmp: log request parameters
-  size_t debugVisiblePixels = 0;
-  unsigned char debugMaxAlpha = 0;
-
-  for (size_t i = 0; i < image.size() / 4; i++) {
-    unsigned char a = image[i * 4 + 3];
-    if (a > 0) debugVisiblePixels++;
-    if (a > debugMaxAlpha) debugMaxAlpha = a;
-  }
-
-  LOG(INFO) << "[SERVER] Debug visible pixels = " << debugVisiblePixels;
-  LOG(INFO) << "[SERVER] Debug max alpha = "
-            << static_cast<int>(debugMaxAlpha);
-
   heatmap_free(hm);
 
   LOG(INFO) << "[SERVER] ...done";
@@ -694,7 +592,7 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
     writes += out;
   }
 
-  writePNG(&image[0], w, h, sock);
+  writePNG(&rcontext.getImage()[0], w, h, sock);
 
   LOG(INFO) << "[SERVER] ...done";
 
@@ -1121,6 +1019,7 @@ util::http::Answer Server::handleGeoJSONReq(const Params& pars) const {
     std::lock_guard<std::mutex> guard(_m);
     bool has = _rs.count(id);
     if (!has) {
+      LOG(ERROR) << "Session " << id << " not found!";
       throw std::invalid_argument("Session not found");
     }
     reqor = _rs[id];
@@ -1129,6 +1028,7 @@ util::http::Answer Server::handleGeoJSONReq(const Params& pars) const {
   if (!reqor->ready()) {
     throw std::invalid_argument("Session not ready.");
   }
+
   size_t fid = reqor->getFieldId(layer);
 
   // as soon as we are ready, the reqor can be read concurrently
@@ -1138,10 +1038,15 @@ util::http::Answer Server::handleGeoJSONReq(const Params& pars) const {
 
   if (!noExport) {
     size_t row;
-    if (gid < reqor->getObjects(fid).size())
+    if (gid < reqor->getObjects(fid).size()) {
       row = reqor->getObjects(fid)[gid].second;
-    else
-      row = reqor->getDynamicPoints(fid)[gid].second;
+    } else if (gid - reqor->getObjects(fid).size() <
+               reqor->getDynamicPoints(fid).size()) {
+      row = reqor->getDynamicPoints(fid)[gid - reqor->getObjects(fid).size()]
+                .second;
+    } else {
+      throw std::invalid_argument("Invalid request.");
+    }
 
     for (auto col : reqor->requestRow(row)) {
       dict.dict[col.first] = col.second;
@@ -1220,6 +1125,8 @@ util::http::Answer Server::handlePosReq(const Params& pars) const {
 
   int h = atoi(pars.find("height")->second.c_str());
 
+  if (h <= 0 || h > 3000) throw std::invalid_argument("Invalid request");
+
   double reso = mercH / h;
 
   // res of -1 means dont render clusters
@@ -1232,6 +1139,7 @@ util::http::Answer Server::handlePosReq(const Params& pars) const {
     std::lock_guard<std::mutex> guard(_m);
     bool has = _rs.count(id);
     if (!has) {
+      LOG(ERROR) << "Session " << id << " not found!";
       throw std::invalid_argument("Session not found");
     }
     reqor = _rs[id];
@@ -1375,7 +1283,7 @@ util::http::Answer Server::handleClearSessReq(
 }
 
 // _____________________________________________________________________________
-util::http::Answer Server::handleExamplePageReq(const Params& pars) const {
+util::http::Answer Server::handleExamplePageReq(const Params&) const {
   std::string html =
       std::string(example_html,
                   example_html + sizeof example_html / sizeof example_html[0]);
@@ -1410,18 +1318,25 @@ util::http::Answer Server::handleIndexReq(const Params& pars) const {
 }
 
 // _____________________________________________________________________________
-util::http::Answer Server::handleQueryReq(
-    const Params& pars, const HeaderParams& headerParams) const {
+util::http::Answer Server::handleQueryReq(const Params& pars,
+                                          const HeaderParams&) const {
   if (pars.count("backend") == 0 || pars.find("backend")->second.empty())
     throw std::invalid_argument("No backend (?backend=) specified.");
 
   RequestorConfig rcfg;
 
+  // backwards compatibility
   if (pars.count("fields") != 0) {
     for (auto raw : util::split(pars.find("fields")->second, ';')) {
       auto parts = util::split(raw, ',');
       if (parts.size() == 0) continue;
-      rcfg.fields.push_back({parts[0], parts.size() > 1 ? parts[1] : "", 0, 0});
+      rcfg.fields.push_back({
+          parts[0],                          // geomField
+          getFreeLayerId(),                  // id
+          "",                                // name
+          parts.size() > 1 ? parts[1] : "",  // valueField
+                                             // ..., rest defaults
+      });
     }
   }
 
@@ -1685,7 +1600,7 @@ void Server::clearOldSessions() const {
       for (const auto& i : _rs) {
         if (std::chrono::duration_cast<std::chrono::minutes>(
                 std::chrono::system_clock::now() - i.second->createdAt())
-                .count() >= 1) {
+                .count() >= _cacheLifetime) {
           toDel.push_back(i.first);
         }
       }
@@ -1715,6 +1630,7 @@ util::http::Answer Server::handleExportReq(const Params& pars, int sock) const {
     std::lock_guard<std::mutex> guard(_m);
     bool has = _rs.count(id);
     if (!has) {
+      LOG(ERROR) << "Session " << id << " not found!";
       throw std::invalid_argument("Session not found");
     }
     reqor = _rs[id];
@@ -1736,7 +1652,7 @@ util::http::Answer Server::handleExportReq(const Params& pars, int sock) const {
   // point 7
 
   std::stringstream ss;
-  ss << "HTTP/1.1 200 OK" << aw.status << "\r\n";
+  ss << "HTTP/1.1 " << aw.status << "\r\n";
   for (const auto& kv : aw.params)
     ss << kv.first << ": " << kv.second << "\r\n";
 
@@ -1885,43 +1801,7 @@ util::http::Answer Server::handleLoadStatusReq(const Params& pars) const {
 }
 
 // _____________________________________________________________________________
-void Server::drawPoint(std::vector<uint32_t>& points,
-                       std::vector<double>& weights,
-                       std::vector<std::pair<float, float>>& rasterDims, int px,
-                       int py, int w, int h, MapStyle style, double weight,
-                       double rasterW, double rasterH) const {
-  if (style == RASTER) {
-    if (px >= 0 && py >= 0 && px < w && py < h) {
-      rasterDims[w * py + px] = {rasterW, rasterH};
-      if (weights[w * py + px] == 0) {
-        points.push_back(w * py + px);
-        weights[w * py + px] = weight;
-      } else {
-        // not entirely correct, but looks good on very low zoom levels
-        // where many raster cells are rendered onto the same pixel
-        weights[w * py + px] = (weights[w * py + px] + weight) / 2.0;
-      }
-    }
-  } else if (style == OBJECTS) {
-    // for the raw style, increase the size of the points a bit
-    for (int x = px - 2; x < px + 2; x++) {
-      for (int y = py - 2; y < py + 2; y++) {
-        if (x >= 0 && y >= 0 && x < w && y < h) {
-          if (weights[w * y + x] == 0) points.push_back(w * y + x);
-          weights[w * y + x] += weight;
-        }
-      }
-    }
-  } else {
-    if (px >= 0 && py >= 0 && px < w && py < h) {
-      if (weights[w * py + px] == 0) points.push_back(w * py + px);
-      weights[w * py + px] += weight;
-    }
-  }
-}
-
-// _____________________________________________________________________________
-std::string Server::getLayerId() const {
+std::string Server::getFreeLayerId() const {
   std::random_device dev;
   std::mt19937 rng(dev());
   std::uniform_int_distribution<std::mt19937::result_type> d(
@@ -1973,7 +1853,7 @@ void Server::createCache(const std::string& backend,
 
 // _____________________________________________________________________________
 std::string Server::loadCache(const std::string& backend,
-                              const GeomCacheConfig& cfg) const {
+                              const GeomCacheConfig&) const {
   std::shared_ptr<GeomCache> cache = _caches[backend];
 
   try {
@@ -1986,66 +1866,6 @@ std::string Server::loadCache(const std::string& backend,
 
     throw;
   }
-}
-
-// _____________________________________________________________________________
-void Server::drawLine(unsigned char* image, int x0, int y0, int x1, int y1,
-                      int w, int h) const {
-  // Bresenham
-  int dx = abs(x1 - x0);
-  int sx = x0 < x1 ? 1 : -1;
-  int dy = -abs(y1 - y0);
-  int sy = y0 < y1 ? 1 : -1;
-  int error = dx + dy;
-
-  while (true) {
-    if (x0 >= 0 && y0 >= 0 && x0 < w && y0 < h) {
-      size_t coord = y0 * w * 4 + x0 * 4;
-      image[coord] = 51;
-      image[coord + 1] = 136;
-      image[coord + 2] = 255;
-      image[coord + 3] = 150;
-    }
-
-    if (x0 == x1 && y0 == y1) break;
-
-    if (2 * error >= dy) {
-      if (x0 == x1) break;
-      error += dy;
-      x0 += sx;
-    }
-    if (2 * error <= dx) {
-      if (y0 == y1) break;
-      error += dx;
-      y0 += sy;
-    }
-  }
-}
-
-// _____________________________________________________________________________
-heatmap_stamp_t* Server::rasterStamp(double res, double w, double h,
-                                     double screenW, double screenH) const {
-  if (w < 0) w = 0;
-  if (h < 0) h = 0;
-  if (screenW < 0) screenW = 0;
-  if (screenH < 0) screenH = 0;
-  if (isnan(w)) w = 0;
-  if (isnan(h)) h = 0;
-
-  int width = std::min(screenW * 2, (ceil(w / res)));
-  int height = std::min(screenH * 2, (ceil(h / res)));
-
-  checkMem(sizeof(float) * width * height, _maxMemory);
-  float* stamp = (float*)calloc(width * height, sizeof(float));
-  if (!stamp) return 0;
-
-  for (int x = 0; x < width; x++) {
-    for (int y = 0; y < height; y++) {
-      stamp[x * height + y] = 1.0;
-    }
-  }
-
-  return heatmap_stamp_new_with(width, height, stamp);
 }
 
 // _____________________________________________________________________________
@@ -2103,7 +1923,7 @@ RequestorConfig Server::getRequestorCfgFromJSON(
             if (layer.value().contains("style"))
               curField.style = layer.value()["style"].get<std::string>();
             if (curField.name.size() == 0) curField.name = curField.geomField;
-            if (curField.id.size() == 0) curField.id = getLayerId();
+            if (curField.id.size() == 0) curField.id = getFreeLayerId();
             ret.fields.push_back(curField);
           }
         }
@@ -2128,6 +1948,9 @@ GeomCacheConfig Server::getGeomCacheCfgFromJSON(
       for (const auto& i : data.items()) {
         if (i.key() == "fillQuery") {
           ret.fillQuery = i.value().get<std::string>();
+        }
+        if (i.key() == "rasterMetaQuery") {
+          ret.rasterMetaQuery = i.value().get<std::string>();
         }
       }
     }

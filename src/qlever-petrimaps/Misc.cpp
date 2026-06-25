@@ -17,6 +17,9 @@ using util::LogLevel::ERROR;
 using util::LogLevel::INFO;
 using util::LogLevel::WARN;
 
+// change on each index-breaking change to the code base
+const static std::string INDEX_HASH_PREFIX = "_5_";
+
 // _____________________________________________________________________________
 std::vector<std::string> RequestReader::requestColumns(
     const std::string& query) {
@@ -316,9 +319,12 @@ void RequestReader::parseRasterMeta(const char* c, size_t size) {
           int64_t val = 0;
           std::memcpy(&val, &rawBits, sizeof(val));
           _curFieldWidth = val;
+        } else {
+          // default value if unparsable
+          _curFieldWidth = 1;
         }
       } else if (_curIdCol == 2) {
-        // field width
+        // field height
         if (type == 3) {
           // 3 = double in qlever
           uint64_t rawBits = (_curId.val << 4);
@@ -355,7 +361,7 @@ void RequestReader::parseIds(const char* c, size_t size) {
       if (_curIdCol < _geomFields) {
         // geometry ID
         _ids[_curIdCol].push_back({_curId.val, _ids[_curIdCol].size()});
-      } else if (_curIdCol < _valFields + _geomFields){
+      } else if (_curIdCol < _valFields + _geomFields) {
         // value
 
         uint8_t type = (_curId.val & (uint64_t(15) << 60)) >> 60;
@@ -371,9 +377,12 @@ void RequestReader::parseIds(const char* c, size_t size) {
           int64_t val = 0;
           std::memcpy(&val, &rawBits, sizeof(val));
           _vals[_curIdCol - _geomFields].push_back(val);
+        } else {
+          _vals[_curIdCol - _geomFields].push_back(0);
         }
       } else {
-        _rasterMetas[_curIdCol - _geomFields - _valFields].push_back(_curId.val);
+        _rasterMetas[_curIdCol - _geomFields - _valFields].push_back(
+            _curId.val);
       }
       _curIdCol += 1;
     }
@@ -382,7 +391,6 @@ void RequestReader::parseIds(const char* c, size_t size) {
 
 // _____________________________________________________________________________
 void RequestReader::parse(const char* c, size_t size) {
-  // TODO: just a rough approximation
   checkMem(size, _maxMemory);
 
   const char* start = c;
@@ -399,6 +407,7 @@ void RequestReader::parse(const char* c, size_t size) {
           _curRow++;
           _state = IN_ROW;
           c++;
+          continue;
         } else {
           if (*c != '\t') _dangling += *c;
           c++;
@@ -461,7 +470,7 @@ std::string petrimaps::normalizeURL(const std::string& inURL) {
   curl_url_cleanup(url);
 
   // drop trailing /
-  if (res.back() == '/') res.pop_back();
+  if (res.size() && res.back() == '/') res.pop_back();
 
   return res;
 }
@@ -504,4 +513,56 @@ std::string petrimaps::canonizeURL(const std::string& inURL) {
 
   curl_easy_cleanup(curl);
   return normalizeURL(ret);
+}
+
+// _____________________________________________________________________________
+size_t RequestReader::writeCbString(void* contents, size_t size, size_t nmemb,
+                                    void* userp) {
+  ((std::string*)userp)->append((char*)contents, size * nmemb);
+  return size * nmemb;
+}
+
+// _____________________________________________________________________________
+std::string RequestReader::requestIndexHash(const std::string& configHash) {
+  // TODO: move this function into Reader class
+  CURLcode res;
+  char errbuf[CURL_ERROR_SIZE];
+  std::string response;
+
+  if (_curl) {
+    std::string url = _backendUrl + "/?cmd=get-index-id";
+    petrimapsCurlSetup(_curl);
+    curl_easy_setopt(_curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(_curl, CURLOPT_WRITEFUNCTION,
+                     RequestReader::writeCbString);
+    curl_easy_setopt(_curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(_curl, CURLOPT_ERRORBUFFER, errbuf);
+
+    res = curl_easy_perform(_curl);
+
+    if (res != CURLE_OK) {
+      size_t len = strlen(errbuf);
+      if (len > 0) {
+        LOG(ERROR) << "[GEOMCACHE] " << errbuf;
+      } else {
+        LOG(ERROR) << "[GEOMCACHE] " << curl_easy_strerror(res);
+      }
+
+      return "";
+    }
+
+    long httpCode = 0;
+    curl_easy_getinfo(_curl, CURLINFO_RESPONSE_CODE, &httpCode);
+
+    if (httpCode != 200) {
+      LOG(WARN) << "QLever backend returned status code " << httpCode
+                << " for index hash.";
+      return "";
+    }
+
+    return INDEX_HASH_PREFIX + "|" + configHash + "|" + response;
+  } else {
+    LOG(ERROR) << "[GEOMCACHE] Failed to perform curl request for index hash.";
+    return "";
+  }
 }

@@ -24,13 +24,13 @@
 namespace petrimaps {
 
 const static std::string RASTER_META_QUERY_DEFAULT =
-"PREFIX wp: <https://wald.cs.uni-freiburg.de/ontology#>"
-"PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>"
-"PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>"
-"SELECT ?s ?w ?h WHERE {"
-"  ?s wp:fieldHeight ?h ."
-"  ?s wp:fieldWidth ?w ."
-"}";
+    "PREFIX wp: <https://wald.cs.uni-freiburg.de/ontology#>"
+    "PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>"
+    "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>"
+    "SELECT ?s ?w ?h WHERE {"
+    "  ?s wp:fieldHeight ?h ."
+    "  ?s wp:fieldWidth ?w ."
+    "}";
 
 const static std::string FILL_QUERY_DEFAULT =
     "PREFIX geo: <http://www.opengis.net/ont/geosparql#> "
@@ -203,8 +203,6 @@ class GeomCache {
                            void* userp);
   static size_t writeCbCount(void* contents, size_t size, size_t nmemb,
                              void* userp);
-  static size_t writeCbString(void* contents, size_t size, size_t nmemb,
-                              void* userp);
 
   // Get the right SPARQL query for the given backend.
   const std::string& getFillQuery() const;
@@ -215,8 +213,6 @@ class GeomCache {
   void requestRasterMeta();
 
   std::string queryFields(std::string query, size_t offset, size_t limit) const;
-
-  static bool pointValid(const util::geo::DPoint& p);
 
   static util::geo::DLine createLineString(const std::string& a, size_t p);
 
