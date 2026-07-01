@@ -518,10 +518,14 @@ function _onLayerLoad(e) {
     document.getElementById("msg").style.display = "none";
 }
 
+function getVisibleTmsLayerId(layerId) {
+    return layerId.replace(/-([?$])/, "-");
+}
+
 function buildTmsUrl() {
     if (!sessionId || !currentTileConfig) return null;
     
-    const layerId = encodeURIComponent(currentTileConfig.layerId);
+    const layerId = encodeURIComponent(getVisibleTmsLayerId(currentTileConfig.layerId));
     const style = encodeURIComponent(currentTileConfig.style);
     
     return `${window.location.origin}/tms/${layerId}/${style}/{x}/{y}/{z}.png`;

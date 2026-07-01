@@ -749,7 +749,7 @@ util::http::Answer Server::handleWMTSGetCapabilitiesReq(const Params& pars)
 
       const auto fields = reqor->getFields();
       for (const auto& field : fields) {
-        std::string layerId = sessionId + "-" + field.geomField;
+        std::string layerId = sessionId + "-" + field.geomFieldLayerId();
         std::vector<std::string> styles;
 
         if (field.style == "heatmap") {
@@ -902,7 +902,7 @@ std::string Server::getHeatLayer(const std::string& layer) const {
       throw std::invalid_argument("No fields found for session.");
     }
   
-    heatLayer = layer + "-" + fields[0].geomField;
+    heatLayer = layer + "-" + fields[0].geomFieldLayerId();
   }
   return heatLayer;
 }

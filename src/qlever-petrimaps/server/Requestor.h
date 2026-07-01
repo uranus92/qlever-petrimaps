@@ -37,6 +37,17 @@ struct FieldConfig {
   const std::string geomFieldRaw() const {
     return util::split(geomField, ':')[0];
   }
+  static std::string layerFieldId(std::string field) {
+    auto parts = util::split(field, ':');
+    if (!parts.empty() && !parts[0].empty() &&
+        (parts[0][0] == '?' || parts[0][0] == '$')) {
+          parts[0].erase(0, 1);
+        }
+    return util::implode(parts, ":");
+  }
+  const std::string geomFieldLayerId() const{
+    return layerFieldId(geomField);
+  }
 };
 
 struct RequestorConfig {
@@ -111,6 +122,7 @@ class Requestor {
 
     for (size_t i = 0; i < _geomColumns.size(); i++) {
       _geoColToLid[_geomColumns[i]] = i;
+      _geoColToLid[FieldConfig::layerFieldId(_geomColumns[i])] = i;
     }
   }
 

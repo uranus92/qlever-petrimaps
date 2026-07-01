@@ -755,7 +755,8 @@ h1, #msg-heading {
     padding: 5px;
 }
 
-#ex button {
+#ex button,
+#tms-actions button {
     padding: 6px 12px;
     margin-bottom: 0;
     font-size: 15px;
@@ -777,7 +778,8 @@ h1, #msg-heading {
     background-color: white;
 }
 
-#ex button:hover {
+#ex button:hover,
+#tms-actions button:hover {
     background-color: #f4f4f4;
 }
 
@@ -858,8 +860,4 @@ h1, #msg-heading {
 #tms-actions {
     display: flex;
     gap: 12px;
-}
-
-#tms-actions button {
-    cursor: pointer;
 }
