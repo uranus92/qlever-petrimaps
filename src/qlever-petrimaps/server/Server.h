@@ -46,6 +46,9 @@ class Server : public util::http::Handler {
   util::http::Answer handleWMTSReq(const Params& pars, int sock) const;
   util::http::Answer handleWMTSGetTileReq(const Params& pars, int sock) const;
   util::http::Answer handleWMTSGetCapabilitiesReq(const Params& pars) const;
+  util::http::Answer handleWFSReq(const Params& pars) const;
+  util::http::Answer handleWFSGetCapabilitiesReq(const Params& pars) const;
+  util::http::Answer handleWFSGetFeatureReq(const Params& pars) const;
 
   std::string getHeatLayer(const std::string& layer) const;
   static uint64_t validateTileCoordinates(int x, int y, int z);

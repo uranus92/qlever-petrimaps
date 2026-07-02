@@ -66,6 +66,7 @@ using util::geo::extendBox;
 using util::geo::intersection;
 using util::geo::intersects;
 using util::geo::LineSegment;
+using util::geo::latLngToWebMerc;
 using util::geo::webMercToLatLng;
 
 const static double THRESHOLD = 200;
@@ -151,11 +152,11 @@ util::http::Answer Server::handle(const util::http::Req& req, int con) const {
       params["z"] = parts[4].substr(0, parts[4].size() - 4);
 
       a = handleTMSReq(params, con);
-    }
-    else if (cmd == "/wmts") {
+    } else if (cmd == "/wmts") {
       a = handleWMTSReq(params, con);
-    }
-    else if (cmd.find("/wmts/") == 0){
+    } else if (cmd == "/wfs"){
+      a = handleWFSReq(params);
+    } else if (cmd.find("/wmts/") == 0){
       std::string wmtsPath = cmd.substr(6);
       auto parts = util::split(wmtsPath, '/');
 
@@ -178,8 +179,7 @@ util::http::Answer Server::handle(const util::http::Req& req, int con) const {
       params["TILECOL"] = parts[5].substr(0, parts[5].size() - 4);
 
       a = handleWMTSGetTileReq(params, con);
-    }
-    else {
+    } else {
       a = util::http::Answer("404 Not Found", "dunno");
     }
   } catch (const std::runtime_error& e) {
@@ -616,7 +616,24 @@ util::http::Answer Server::handleWMTSReq(const Params& pars, int sock) const{
 
   throw std::invalid_argument("Unsupported WMTS request.");
 }
+// _____________________________________________________________________________
+util::http::Answer Server::handleWFSReq(const Params& pars) const {
+  if (pars.count("REQUEST") == 0 || pars.find("REQUEST")->second.empty()) {
+    throw std::invalid_argument("No WFS request specified.");
+  }
 
+  std::string request = pars.find("REQUEST")->second;
+
+  if (request == "GetCapabilities") {
+    return handleWFSGetCapabilitiesReq(pars);
+  }
+
+  if (request == "GetFeature") {
+    return handleWFSGetFeatureReq(pars);
+  }
+
+  throw std::invalid_argument("Unsupported WFS request.");
+}
 // _____________________________________________________________________________
 util::http::Answer Server::handleWMTSGetTileReq(const Params& pars, int sock) const {
   UNUSED(sock);
@@ -878,6 +895,345 @@ xml << "    </TileMatrixSet>\n";
 
   util::http::Answer answ("200 OK", xml.str());
   answ.params["Content-Type"] = "application/xml; charset=UTF-8";
+  answ.params["Cache-Control"] = "no-cache";
+
+  return answ;
+}
+
+// _____________________________________________________________________________
+util::http::Answer Server::handleWFSGetCapabilitiesReq(const Params& pars) const {
+  if (pars.count("SERVICE") == 0 || pars.find("SERVICE")->second.empty()) {
+    throw std::invalid_argument("No WFS service specified.");
+  }
+
+  if (pars.find("SERVICE")->second != "WFS") {
+    throw std::invalid_argument("Invalid WFS service.");
+  }
+
+  if (pars.count("VERSION") == 0 || pars.find("VERSION")->second.empty()) {
+    throw std::invalid_argument("No WFS version specified.");
+  }
+
+  if (pars.find("VERSION")->second != "2.0.0") {
+    throw std::invalid_argument("Unsupported WFS version.");
+  }
+
+  std::vector<std::string> wfsLayers;
+  {
+    std::lock_guard<std::mutex> guard(_m);
+
+    for (const auto& entry : _rs) {
+      const std::string& sessionId = entry.first;
+      const auto& reqor = entry.second;
+
+      const auto fields = reqor->getFields();
+      for (const auto& field : fields) {
+        wfsLayers.push_back(sessionId + "-" + field.geomFieldLayerId());
+      }
+    }
+  }
+
+  LOG(INFO) << "[SERVER] WFS GetCapabilities with " << wfsLayers.size()
+            << " layers.";
+  
+  std::stringstream xml;
+
+  xml << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+  xml << "<WFS_Capabilities "
+      << "xmlns=\"http://www.opengis.net/wfs/2.0\" "
+      << "xmlns:wfs=\"http://www.opengis.net/wfs/2.0\" "
+      << "xmlns:ows=\"http://www.opengis.net/ows/1.1\" "
+      << "xmlns:xlink=\"http://www.w3.org/1999/xlink\" "
+      << "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" "
+      << "version=\"2.0.0\">\n";
+  
+  xml << "  <ows:ServiceIdentification>\n"
+      << "    <ows:Title>qlever-petrimaps WFS Service</ows:Title>\n"
+      << "    <ows:Abstract>WFS service for qlever-petrimaps</ows:Abstract>\n"
+      << "    <ows:ServiceType>WFS</ows:ServiceType>\n"
+      << "    <ows:ServiceTypeVersion>2.0.0</ows:ServiceTypeVersion>\n"
+      << "  </ows:ServiceIdentification>\n";
+  
+  xml << "  <ows:OperationsMetadata>\n";
+  xml << "    <ows:Operation name=\"GetCapabilities\">\n";
+  xml << "      <ows:DCP>\n";
+  xml << "        <ows:HTTP>\n";
+  xml << "          <ows:Get xlink:href=\"/wfs\" />\n";
+  xml << "        </ows:HTTP>\n";
+  xml << "      </ows:DCP>\n";
+  xml << "    </ows:Operation>\n";
+  xml << "    <ows:Operation name=\"GetFeature\">\n";
+  xml << "      <ows:DCP>\n";
+  xml << "        <ows:HTTP>\n";
+  xml << "          <ows:Get xlink:href=\"/wfs\" />\n";
+  xml << "        </ows:HTTP>\n";
+  xml << "      </ows:DCP>\n";
+  xml << "      <ows:Parameter name=\"outputFormat\">\n";
+  xml << "        <ows:AllowedValues>\n";
+  xml << "          <ows:Value>application/json</ows:Value>\n";
+  xml << "        </ows:AllowedValues>\n";
+  xml << "      </ows:Parameter>\n";
+  xml << "      <ows:Parameter name=\"count\">\n";
+  xml << "        <ows:AllowedValues>\n";
+  xml << "          <ows:AnyValue />\n";
+  xml << "        </ows:AllowedValues>\n";
+  xml << "      </ows:Parameter>\n";
+  xml << "      <ows:Parameter name=\"startIndex\">\n";
+  xml << "        <ows:AllowedValues>\n";
+  xml << "          <ows:AnyValue />\n";
+  xml << "        </ows:AllowedValues>\n";
+  xml << "      </ows:Parameter>\n";
+  xml << "      <ows:Parameter name=\"bbox\">\n";
+  xml << "        <ows:AllowedValues>\n";
+  xml << "          <ows:AnyValue />\n";
+  xml << "        </ows:AllowedValues>\n";
+  xml << "      </ows:Parameter>\n";
+  xml << "    </ows:Operation>\n";
+  xml << "  </ows:OperationsMetadata>\n";
+
+  xml << "  <FeatureTypeList>\n";
+  for (const auto& layerId : wfsLayers) {
+    std::string escapedLayerId = xmlEscape(layerId);
+
+    xml << "    <FeatureType>\n";
+    xml << "      <Name>" << escapedLayerId << "</Name>\n";
+    xml << "      <Title>" << escapedLayerId << "</Title>\n";
+    xml << "      <DefaultCRS>urn:ogc:def:crs:EPSG::4326</DefaultCRS>\n";
+    xml << "      <OutputFormats>\n";
+    xml << "        <Format>application/json</Format>\n";
+    xml << "      </OutputFormats>\n";
+    xml << "    </FeatureType>\n";
+  }
+  xml << "  </FeatureTypeList>\n";
+
+  xml << "</WFS_Capabilities>\n";
+
+  util::http::Answer answ("200 OK", xml.str());
+  answ.params["Content-Type"] = "application/xml; charset=UTF-8";
+  answ.params["Cache-Control"] = "no-cache";
+
+  return answ;
+}
+
+// _____________________________________________________________________________
+util::http::Answer Server::handleWFSGetFeatureReq(const Params& pars) const {
+  if (pars.count("SERVICE") == 0 || pars.find("SERVICE")->second.empty()) {
+    throw std::invalid_argument("No WFS service specified.");
+  }
+
+  if (pars.find("SERVICE")->second != "WFS") {
+    throw std::invalid_argument("Invalid WFS service.");
+  }
+
+  if (pars.count("VERSION") == 0 || pars.find("VERSION")->second.empty()) {
+    throw std::invalid_argument("No WFS version specified.");
+  }
+
+  if (pars.find("VERSION")->second != "2.0.0") {
+    throw std::invalid_argument("Unsupported WFS version.");
+  }
+
+  std::string typeName;
+  if (pars.count("TYPENAMES") != 0 && !pars.find("TYPENAMES")->second.empty()) {
+    typeName = pars.find("TYPENAMES")->second;
+  } else if (pars.count("TYPENAME") != 0 &&
+             !pars.find("TYPENAME")->second.empty()) {
+    typeName = pars.find("TYPENAME")->second;
+  } else {
+    throw std::invalid_argument("No WFS typename specified.");
+  }
+
+  std::shared_ptr<Requestor> reqor;
+  size_t fid = 0;
+  bool found = false;
+  {
+    std::lock_guard<std::mutex> guard(_m);
+    for (const auto& entry : _rs) {
+      const std::string& sessionId = entry.first;
+      const auto& curReqor = entry.second;
+
+      const auto fields = curReqor->getFields();
+      for (const auto& field : fields) {
+        std::string layerId = sessionId + "-" + field.geomFieldLayerId();
+        if (layerId == typeName) {
+          reqor = curReqor;
+          fid = curReqor->getFieldId(field.geomField);
+          found = true;
+          break;
+        }
+      }
+      if (found) {
+        break;
+      }
+    }
+  }
+
+  if (!found) {
+    throw std::invalid_argument("WFS type name not found.");
+  }
+
+  if (!reqor->ready()) {
+    throw std::invalid_argument("Session not ready.");
+  }
+
+  auto parseSizeParam = [](const std::string& value,
+                          const std::string& name) {
+    if (value.empty() || value[0] == '-') {
+      throw std::invalid_argument("Invalid WFS " + name + " specified.");
+    }
+
+    size_t pos = 0;
+    size_t parsed = std::stoull(value, &pos);
+    if (pos != value.size()) {
+      throw std::invalid_argument("Invalid WFS " + name + " specified.");
+    }
+
+    return parsed;
+  };
+
+  size_t total = reqor->getNumObjects(fid);
+  size_t startIndex = 0;
+
+  if (pars.count("STARTINDEX") != 0 &&
+      !pars.find("STARTINDEX")->second.empty()) {
+    startIndex =
+        parseSizeParam(pars.find("STARTINDEX")->second, "STARTINDEX");
+  }
+
+  if (startIndex > total) {
+    startIndex = total;
+  }
+
+  bool hasBbox = false;
+  FBox fbbox;
+  DBox dbbox;
+
+  if (pars.count("BBOX") != 0 && !pars.find("BBOX")->second.empty()) {
+    auto bboxParts = util::split(pars.find("BBOX")->second, ',');
+
+    if (bboxParts.size() != 4 && bboxParts.size() != 5) {
+      throw std::invalid_argument("Invalid WFS BBOX specified.");
+    }
+
+    double minLon = std::atof(bboxParts[0].c_str());
+    double minLat = std::atof(bboxParts[1].c_str());
+    double maxLon = std::atof(bboxParts[2].c_str());
+    double maxLat = std::atof(bboxParts[3].c_str());
+
+    auto lowerLeft = latLngToWebMerc<double>(minLat, minLon);
+    auto upperRight = latLngToWebMerc<double>(maxLat, maxLon);
+
+    double minX = std::min(lowerLeft.getX(), upperRight.getX());
+    double minY = std::min(lowerLeft.getY(), upperRight.getY());
+    double maxX = std::max(lowerLeft.getX(), upperRight.getX());
+    double maxY = std::max(lowerLeft.getY(), upperRight.getY());
+
+    fbbox = FBox({static_cast<float>(minX), static_cast<float>(minY)},
+                 {static_cast<float>(maxX), static_cast<float>(maxY)});
+    dbbox = DBox({minX, minY}, {maxX, maxY});
+
+    hasBbox = true;
+  }
+
+  std::vector<size_t> featureIds;
+
+  if (hasBbox) {
+    std::unordered_set<ID_TYPE> candidates;
+
+    if (intersects(reqor->getPointGrid(fid).getBBox(), fbbox)) {
+      reqor->getPointGrid(fid).get(fbbox, &candidates);
+    }
+
+    if (intersects(reqor->getLineGrid(fid).getBBox(), fbbox)) {
+      reqor->getLineGrid(fid).get(fbbox, &candidates);
+    }
+
+    std::vector<ID_TYPE> sortedCandidates(candidates.begin(), candidates.end());
+    std::sort(sortedCandidates.begin(), sortedCandidates.end());
+
+    for (auto candidateOid : sortedCandidates) {
+      size_t oid = candidateOid;
+      if (reqor->isCluster(fid, oid)) oid = reqor->getCluster(fid, oid).first;
+      if (oid >= reqor->getNumObjects(fid)) continue;
+
+      bool include = false;
+
+      if (oid < reqor->getObjects(fid).size()) {
+        auto geomId = reqor->getObjects(fid)[oid].first;
+
+        if (geomId < I_OFFSET) {
+          auto p = reqor->getPoint(fid, oid);
+          include = contains(p, fbbox);
+        } else {
+          include = reqor->lineIntersects(geomId, dbbox);
+        }
+      } else {
+        auto p = reqor->getPoint(fid, oid);
+        include = contains(p, fbbox);
+      }
+
+      if (include) {
+        featureIds.push_back(oid);
+      }
+    }
+  } else {
+    for (size_t oid = 0; oid < total; oid++) {
+      featureIds.push_back(oid);
+    }
+  }
+
+  size_t featureStart = std::min(startIndex, featureIds.size());
+  size_t featureEnd = featureIds.size();
+
+  if (pars.count("COUNT") != 0 && !pars.find("COUNT")->second.empty()) {
+    size_t count = parseSizeParam(pars.find("COUNT")->second, "COUNT");
+    if (count < featureIds.size() - featureStart) {
+      featureEnd = featureStart + count;
+    }
+  }
+
+  std::stringstream json;
+  json << "{\"type\": \"FeatureCollection\", \"features\": [";
+
+  bool first = false;
+  for (size_t idx = featureStart; idx < featureEnd; idx++) {
+    size_t oid = featureIds[idx];
+    util::json::Val dict;
+    size_t row = reqor->getRow(fid, oid);
+
+    for (const auto& col : reqor->requestRow(row)) {
+      dict.dict[col.first] = col.second;
+    }
+
+    auto res = reqor->getGeom(fid, oid, 0);
+
+    if (first) json << ",";
+    first = true;
+
+    if ((res.poly.size() != 0) + (res.point.size() != 0) +
+        (res.line.size() != 0) > 1) {
+      util::geo::Collection<double> col;
+      col.push_back(res.poly);
+      col.push_back(res.line);
+      col.push_back(res.point);
+
+      GeoJsonOutput out(json, true);
+      out.printLatLng(col, dict);
+    } else if (res.poly.size()) {
+      GeoJsonOutput out(json, true);
+      out.printLatLng(res.poly, dict);
+    } else if (res.line.size()) {
+      GeoJsonOutput out(json, true);
+      out.printLatLng(res.line, dict);
+    } else if (res.point.size()) {
+      GeoJsonOutput out(json, true);
+      out.printLatLng(res.point, dict);
+    }
+  }
+  json << "]}";
+
+  util::http::Answer answ("200 OK", json.str());
+  answ.params["Content-Type"] = "application/json; charset=UTF-8";
   answ.params["Cache-Control"] = "no-cache";
 
   return answ;
