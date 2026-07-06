@@ -29,7 +29,7 @@ using util::LogLevel::INFO;
 using util::LogLevel::WARN;
 
 // _____________________________________________________________________________
-void Requestor::request() {
+void Requestor::request(const std::string& remoteAddr) {
   std::lock_guard<std::mutex> guard(_m);
 
   if (_ready) return;
@@ -65,7 +65,7 @@ void Requestor::request() {
     LOG(INFO) << "[REQUESTOR] Requesting IDs/weights for query " << _rcfg.query;
     LOG(INFO) << "[REQUESTOR] Prepped query: " << prepedGeomQuery;
 
-    reader.requestIds(prepedGeomQuery);
+    reader.requestIds(prepedGeomQuery, remoteAddr);
 
     size_t totNumIds = 0;
     for (size_t i = 0; i < _geomColumns.size(); i++)
@@ -442,7 +442,7 @@ void Requestor::request() {
 
 // _____________________________________________________________________________
 std::vector<std::pair<std::string, std::string>> Requestor::requestRow(
-    uint64_t row) const {
+    uint64_t row, const std::string& remoteAddr) const {
   if (!_cache->ready()) {
     throw std::runtime_error("Geom cache not ready");
   }
@@ -453,7 +453,7 @@ std::vector<std::pair<std::string, std::string>> Requestor::requestRow(
 
   LOG(INFO) << "[REQUESTOR] Row query is " << query;
 
-  reader.requestRows(query);
+  reader.requestRows(query, remoteAddr);
 
   if (reader.rows.size() == 0) return {};
 
@@ -464,33 +464,23 @@ std::vector<std::pair<std::string, std::string>> Requestor::requestRow(
 void Requestor::requestRows(
     std::function<
         void(std::vector<std::vector<std::pair<std::string, std::string>>>)>
-        cb) const {
+        cb,
+    const std::string& remoteAddr) const {
   if (!_cache->ready()) {
     throw std::runtime_error("Geom cache not ready");
   }
   RequestReader reader(_cache->getConfig().backend, _maxMemory, 0, 0, 0);
   LOG(INFO) << "[REQUESTOR] Requesting rows for query " << _rcfg.query;
 
-  ReaderCbPair cbPair{&reader, cb};
-
   reader.requestRows(
       _rcfg.query,
-      [](void* contents, size_t size, size_t nmemb, void* ptr) {
-        size_t realsize = size * nmemb;
-        auto pr = static_cast<ReaderCbPair*>(ptr);
-        try {
-          // clear rows
-          pr->reader->rows = {};
-          pr->reader->parse(static_cast<const char*>(contents), realsize);
-          pr->cb(pr->reader->rows);
-        } catch (...) {
-          pr->reader->exceptionPtr = std::current_exception();
-          return static_cast<size_t>(CURLE_WRITE_ERROR);
-        }
-
-        return realsize;
+      [&reader, &cb](const char* c, size_t n) {
+        // parse this block of rows and give them to the callback
+        reader.rows = {};
+        reader.parse(c, n);
+        cb(reader.rows);
       },
-      &cbPair);
+      remoteAddr);
 }
 
 // _____________________________________________________________________________
@@ -546,9 +536,10 @@ std::string Requestor::prepQueryRow(std::string query, uint64_t row) const {
 
 // _____________________________________________________________________________
 const ResObj Requestor::getNearest(util::geo::DPoint rp, double rad, double res,
-                                   util::geo::FBox fullbox) const {
+                                   util::geo::FBox fullbox,
+                                   const std::string& remoteAddr) const {
   for (size_t lid = 0; lid < getNumFields(); lid++) {
-    auto r = getNearest(lid, rp, rad, res, fullbox);
+    auto r = getNearest(lid, rp, rad, res, fullbox, remoteAddr);
     if (r.has) return r;
   }
 
@@ -558,7 +549,8 @@ const ResObj Requestor::getNearest(util::geo::DPoint rp, double rad, double res,
 // _____________________________________________________________________________
 const ResObj Requestor::getNearest(size_t fieldId, util::geo::DPoint rp,
                                    double rad, double res,
-                                   util::geo::FBox fullbox) const {
+                                   util::geo::FBox fullbox,
+                                   const std::string& remoteAddr) const {
   if (!_cache->ready()) {
     throw std::runtime_error("Geom cache not ready");
   }
@@ -726,7 +718,7 @@ const ResObj Requestor::getNearest(size_t fieldId, util::geo::DPoint rp,
             nearest,
             fieldId,
             points.size() == 1 ? points[0] : util::geo::centroid(points),
-            requestRow(row),
+            requestRow(row, remoteAddr),
             points,
             geomLineGeoms(fieldId, nearest, rad / 10),
             geomPolyGeoms(fieldId, nearest, rad / 10)};
@@ -742,7 +734,7 @@ const ResObj Requestor::getNearest(size_t fieldId, util::geo::DPoint rp,
               nearestL,
               fieldId,
               {frp.getX(), frp.getY()},
-              requestRow(_objects[fieldId][nearestL].second),
+              requestRow(_objects[fieldId][nearestL].second, remoteAddr),
               geomPointGeoms(fieldId, nearestL, res),
               geomLineGeoms(fieldId, nearestL, rad / 10),
               geomPolyGeoms(fieldId, nearestL, rad / 10)};
@@ -753,7 +745,7 @@ const ResObj Requestor::getNearest(size_t fieldId, util::geo::DPoint rp,
               nearestL,
               fieldId,
               fp,
-              requestRow(_objects[fieldId][nearestL].second),
+              requestRow(_objects[fieldId][nearestL].second, remoteAddr),
               geomPointGeoms(fieldId, nearestL, res),
               geomLineGeoms(fieldId, nearestL, rad / 10),
               geomPolyGeoms(fieldId, nearestL, rad / 10)};
