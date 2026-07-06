@@ -21,7 +21,7 @@ using util::LogLevel::INFO;
 using util::LogLevel::WARN;
 
 // change on each index-breaking change to the code base
-const static std::string INDEX_HASH_PREFIX = "_5_";
+const static std::string INDEX_HASH_PREFIX = "_6_";
 
 // _____________________________________________________________________________
 void petrimaps::performCurlRequest(
@@ -434,7 +434,9 @@ std::string petrimaps::canonizeURL(const std::string& inURL,
 }
 
 // _____________________________________________________________________________
-std::string petrimaps::remoteAddress(int sock) {
+std::string petrimaps::remoteAddress(int sock, const HeaderParams& headers) {
+  auto it = headers.find("X-Real-IP");
+  if (it != headers.end()) return it->second;
   struct sockaddr_storage addr;
   socklen_t len = sizeof(addr);
   if (getpeername(sock, reinterpret_cast<struct sockaddr*>(&addr), &len) != 0) {

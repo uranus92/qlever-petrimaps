@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 #include "util/Misc.h"
 #include "util/log/Log.h"
@@ -31,6 +32,8 @@ const static int16_t M_COORD_GRANULARITY = 12230;
 const static int16_t M_COORD_OFFSET = 16384;
 
 const static std::string CURL_USER_AGENT = "petrimaps";
+
+typedef std::unordered_map<std::string, std::string> HeaderParams;
 
 namespace petrimaps {
 
@@ -68,7 +71,7 @@ inline int16_t isMCoord(int16_t c) {
 std::string normalizeURL(const std::string& inURL);
 std::string canonizeURL(const std::string& inURL,
                         const std::string& remoteAddr);
-std::string remoteAddress(int sock);
+std::string remoteAddress(int sock, const HeaderParams& headers);
 
 void performCurlRequest(const std::string& url, const std::string& postFields,
                         const std::string& acceptHeader,
@@ -130,7 +133,6 @@ inline std::string httpRequest(const std::string& url,
   }
   struct curl_slist* headers = 0;
   if (xRealIP.size()) {
-    LOG(util::INFO) << "[SERVER] Remote address is " << xRealIP;
     headers = curl_slist_append(headers,
                                 ("X-Real-IP: " + xRealIP).c_str());
   }

@@ -22,7 +22,6 @@
 namespace petrimaps {
 
 typedef std::map<std::string, std::string> Params;
-typedef std::unordered_map<std::string, std::string> HeaderParams;
 
 class Server : public util::http::Handler {
  public:
@@ -46,15 +45,23 @@ class Server : public util::http::Handler {
   util::http::Answer handleQueryReq(const Params& pars,
                                     const HeaderParams& headerPars,
                                     int sock) const;
-  util::http::Answer handleGeoJSONReq(const Params& pars, int sock) const;
+  util::http::Answer handleGeoJSONReq(const Params& pars,
+                                      const HeaderParams& headerPars,
+                                      int sock) const;
   util::http::Answer handleClearSessReq(const Params& pars,
                                         const HeaderParams& headerPars,
                                         int sock) const;
-  util::http::Answer handlePosReq(const Params& pars, int sock) const;
+  util::http::Answer handlePosReq(const Params& pars,
+                                  const HeaderParams& headerPars,
+                                  int sock) const;
   util::http::Answer handleLoadReq(const Params& pars, int sock) const;
 
-  util::http::Answer handleExportReq(const Params& pars, int sock) const;
-  util::http::Answer handleLoadStatusReq(const Params& pars, int sock) const;
+  util::http::Answer handleExportReq(const Params& pars,
+                                     const HeaderParams& headerPars,
+                                     int sock) const;
+  util::http::Answer handleLoadStatusReq(const Params& pars,
+                                         const HeaderParams& headers,
+                                         int sock) const;
 
   void createCache(const GeomCacheConfig& cfg) const;
   std::string loadCache(const GeomCacheConfig& cfg) const;
@@ -87,12 +94,7 @@ class Server : public util::http::Handler {
                  double rasterW, double rasterH) const;
   void drawLine(unsigned char* image, int x0, int y0, int x1, int y1, int w,
                 int h) const;
-  util::geo::Point<int> mercToPx(util::geo::FPoint p, double orx, double ory,
-                                 double mercW, double mercH, int w,
-                                 int h) const;
-  util::geo::Point<int> mercToPx(util::geo::DPoint p, double orx, double ory,
-                                 double mercW, double mercH, int w,
-                                 int h) const;
+
   size_t _maxMemory;
 
   std::string _cacheDir;

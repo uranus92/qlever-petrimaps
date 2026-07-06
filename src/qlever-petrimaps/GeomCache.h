@@ -135,13 +135,21 @@ class GeomCache {
 
   const GeomCacheConfig& getConfig() const { return _config; }
 
-  const std::vector<util::geo::FPoint>& getPoints() const { return _points; }
+  const std::vector<util::geo::FPoint,
+                    util::no_init_allocator<util::geo::FPoint>>&
+  getPoints() const {
+    return _points;
+  }
 
-  const std::vector<util::geo::Point<int16_t>>& getLinePoints() const {
+  const std::vector<util::geo::Point<int16_t>,
+                    util::no_init_allocator<util::geo::Point<int16_t>>>&
+  getLinePoints() const {
     return _linePoints;
   }
 
-  const std::vector<size_t>& getLines() const { return _lines; }
+  const std::vector<size_t, util::no_init_allocator<size_t>>& getLines() const {
+    return _lines;
+  }
 
   util::geo::FBox getPointBBox(size_t id) const {
     return util::geo::getBoundingBox(_points[id]);
@@ -209,7 +217,7 @@ class GeomCache {
   void addLineString(const util::geo::Line<double>& l, size_t* i);
   void addMultiPolygon(const util::geo::MultiPolygon<double>& mp, size_t* i);
 
-  void insertLine(const util::geo::DLine& l, bool isArea);
+  void insertLine(const util::geo::DLine& l, bool isArea, bool isInner = false);
 
   static std::vector<size_t> getGeomStarts(const std::string& str, size_t a);
 
@@ -217,9 +225,12 @@ class GeomCache {
     return util::geo::latLngToWebMerc<double>(p);
   }
 
-  std::vector<util::geo::FPoint> _points;
-  std::vector<util::geo::Point<int16_t>> _linePoints;
-  std::vector<size_t> _lines;
+  std::vector<util::geo::FPoint, util::no_init_allocator<util::geo::FPoint>>
+      _points;
+  std::vector<util::geo::Point<int16_t>,
+              util::no_init_allocator<util::geo::Point<int16_t>>>
+      _linePoints;
+  std::vector<size_t, util::no_init_allocator<size_t>> _lines;
 
   size_t _pointsFSize;
   size_t _linePointsFSize;
@@ -242,7 +253,7 @@ class GeomCache {
 
   IdMapping _lastQidToId;
 
-  std::vector<IdMapping> _qidToId;
+  std::vector<IdMapping, util::no_init_allocator<IdMapping>> _qidToId;
 
   std::string _dangling, _prev, _raw;
   ParseState _state;
