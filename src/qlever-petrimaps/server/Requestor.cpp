@@ -29,7 +29,7 @@ using util::LogLevel::INFO;
 using util::LogLevel::WARN;
 
 // _____________________________________________________________________________
-void Requestor::request() {
+void Requestor::request(const std::string& remoteAddr) {
   std::lock_guard<std::mutex> guard(_m);
 
   if (_ready) return;
@@ -65,7 +65,7 @@ void Requestor::request() {
     LOG(INFO) << "[REQUESTOR] Requesting IDs/weights for query " << _rcfg.query;
     LOG(INFO) << "[REQUESTOR] Prepped query: " << prepedGeomQuery;
 
-    reader.requestIds(prepedGeomQuery);
+    reader.requestIds(prepedGeomQuery, remoteAddr);
 
     size_t totNumIds = 0;
     for (size_t i = 0; i < _geomColumns.size(); i++)
@@ -91,6 +91,7 @@ void Requestor::request() {
   _dynamicPoints.resize(_geomColumns.size());
   _pgrid.resize(_geomColumns.size());
   _lgrid.resize(_geomColumns.size());
+  _agrid.resize(_geomColumns.size());
   _lpgrid.resize(_geomColumns.size());
   _numObjects.resize(_geomColumns.size());
   _clusterObjects.resize(_geomColumns.size());
@@ -232,6 +233,7 @@ void Requestor::request() {
     checkMem(8 * (pxWidth * pyHeight), _maxMemory);
     checkMem(8 * (lxWidth * lyHeight), _maxMemory);
     checkMem(8 * (lxWidth * lyHeight), _maxMemory);
+    // checkMem(8 * (lxWidth * lyHeight), _maxMemory);
 
     util::geo::FBox fLineBbox = {
         {lineBbox.getLowerLeft().getX(), lineBbox.getLowerLeft().getY()},
@@ -240,6 +242,8 @@ void Requestor::request() {
     _pgrid[geomColId] =
         petrimaps::Grid<ID_TYPE, float, float>(GRID_SIZE, GRID_SIZE, pointBbox);
     _lgrid[geomColId] =
+        petrimaps::Grid<ID_TYPE, float, float>(GRID_SIZE, GRID_SIZE, fLineBbox);
+    _agrid[geomColId] =
         petrimaps::Grid<ID_TYPE, float, float>(GRID_SIZE, GRID_SIZE, fLineBbox);
     _lpgrid[geomColId] =
         petrimaps::Grid<util::geo::Point<uint8_t>, float, float>(
@@ -364,6 +368,9 @@ void Requestor::request() {
           if (l.first >= I_OFFSET &&
               l.first < std::numeric_limits<ID_TYPE>::max()) {
             auto geomId = l.first - I_OFFSET;
+            bool lineIsArea = isArea(geomId);
+
+            util::geo::FPolygon poly;
 
             size_t start = _cache->getLine(geomId);
             size_t end = _cache->getLineEnd(geomId);
@@ -373,8 +380,8 @@ void Requestor::request() {
 
             size_t gi = 0;
 
-            uint8_t lastX = 0;
-            uint8_t lastY = 0;
+            int lastX = 0;
+            int lastY = 0;
 
             for (size_t li = start; li < end; li++) {
               const auto& cur = _cache->getLinePoints()[li];
@@ -393,6 +400,8 @@ void Requestor::request() {
                   (mainX * M_COORD_GRANULARITY + cur.getX()) / 10.0,
                   (mainY * M_COORD_GRANULARITY + cur.getY()) / 10.0);
 
+              if (lineIsArea) poly.getOuter().push_back(curP);
+
               size_t cellX = _lpgrid[geomColId].getCellXFromX(curP.getX());
               size_t cellY = _lpgrid[geomColId].getCellYFromY(curP.getY());
 
@@ -405,12 +414,22 @@ void Requestor::request() {
                             cellY * _lpgrid[geomColId].getCellHeight()) /
                            256;
 
-              if (gi == 3 || lastX != sX || lastY != sY) {
+              const auto& cellBox = _lpgrid[geomColId].getBox(cellX, cellY);
+
+              int fullX = cellBox.getLowerLeft().getX() + sX * 256;
+              int fullY = cellBox.getLowerLeft().getY() + sY * 256;
+
+              if (gi == 3 || lastX != fullX || lastY != fullY) {
                 _lpgrid[geomColId].add(cellX, cellY, getVal(geomColId, i),
                                        {sX, sY});
-                lastX = sX;
-                lastY = sY;
+                lastX = fullX;
+                lastY = fullY;
               }
+            }
+
+            if (lineIsArea && util::geo::area(poly) > (2000.0 * 2000.0)) {
+              auto fbox = util::geo::getBoundingBox(poly);
+              _agrid[geomColId].add(fbox, getVal(geomColId, i), i);
             }
           }
           i++;
@@ -442,7 +461,7 @@ void Requestor::request() {
 
 // _____________________________________________________________________________
 std::vector<std::pair<std::string, std::string>> Requestor::requestRow(
-    uint64_t row) const {
+    uint64_t row, const std::string& remoteAddr) const {
   if (!_cache->ready()) {
     throw std::runtime_error("Geom cache not ready");
   }
@@ -453,7 +472,7 @@ std::vector<std::pair<std::string, std::string>> Requestor::requestRow(
 
   LOG(INFO) << "[REQUESTOR] Row query is " << query;
 
-  reader.requestRows(query);
+  reader.requestRows(query, remoteAddr);
 
   if (reader.rows.size() == 0) return {};
 
@@ -464,33 +483,23 @@ std::vector<std::pair<std::string, std::string>> Requestor::requestRow(
 void Requestor::requestRows(
     std::function<
         void(std::vector<std::vector<std::pair<std::string, std::string>>>)>
-        cb) const {
+        cb,
+    const std::string& remoteAddr) const {
   if (!_cache->ready()) {
     throw std::runtime_error("Geom cache not ready");
   }
   RequestReader reader(_cache->getConfig().backend, _maxMemory, 0, 0, 0);
   LOG(INFO) << "[REQUESTOR] Requesting rows for query " << _rcfg.query;
 
-  ReaderCbPair cbPair{&reader, cb};
-
   reader.requestRows(
       _rcfg.query,
-      [](void* contents, size_t size, size_t nmemb, void* ptr) {
-        size_t realsize = size * nmemb;
-        auto pr = static_cast<ReaderCbPair*>(ptr);
-        try {
-          // clear rows
-          pr->reader->rows = {};
-          pr->reader->parse(static_cast<const char*>(contents), realsize);
-          pr->cb(pr->reader->rows);
-        } catch (...) {
-          pr->reader->exceptionPtr = std::current_exception();
-          return static_cast<size_t>(CURLE_WRITE_ERROR);
-        }
-
-        return realsize;
+      [&reader, &cb](const char* c, size_t n) {
+        // parse this block of rows and give them to the callback
+        reader.rows = {};
+        reader.parse(c, n);
+        cb(reader.rows);
       },
-      &cbPair);
+      remoteAddr);
 }
 
 // _____________________________________________________________________________
@@ -546,9 +555,10 @@ std::string Requestor::prepQueryRow(std::string query, uint64_t row) const {
 
 // _____________________________________________________________________________
 const ResObj Requestor::getNearest(util::geo::DPoint rp, double rad, double res,
-                                   util::geo::FBox fullbox) const {
+                                   util::geo::FBox fullbox,
+                                   const std::string& remoteAddr) const {
   for (size_t lid = 0; lid < getNumFields(); lid++) {
-    auto r = getNearest(lid, rp, rad, res, fullbox);
+    auto r = getNearest(lid, rp, rad, res, fullbox, remoteAddr);
     if (r.has) return r;
   }
 
@@ -558,7 +568,8 @@ const ResObj Requestor::getNearest(util::geo::DPoint rp, double rad, double res,
 // _____________________________________________________________________________
 const ResObj Requestor::getNearest(size_t fieldId, util::geo::DPoint rp,
                                    double rad, double res,
-                                   util::geo::FBox fullbox) const {
+                                   util::geo::FBox fullbox,
+                                   const std::string& remoteAddr) const {
   if (!_cache->ready()) {
     throw std::runtime_error("Geom cache not ready");
   }
@@ -726,7 +737,7 @@ const ResObj Requestor::getNearest(size_t fieldId, util::geo::DPoint rp,
             nearest,
             fieldId,
             points.size() == 1 ? points[0] : util::geo::centroid(points),
-            requestRow(row),
+            requestRow(row, remoteAddr),
             points,
             geomLineGeoms(fieldId, nearest, rad / 10),
             geomPolyGeoms(fieldId, nearest, rad / 10)};
@@ -742,7 +753,7 @@ const ResObj Requestor::getNearest(size_t fieldId, util::geo::DPoint rp,
               nearestL,
               fieldId,
               {frp.getX(), frp.getY()},
-              requestRow(_objects[fieldId][nearestL].second),
+              requestRow(_objects[fieldId][nearestL].second, remoteAddr),
               geomPointGeoms(fieldId, nearestL, res),
               geomLineGeoms(fieldId, nearestL, rad / 10),
               geomPolyGeoms(fieldId, nearestL, rad / 10)};
@@ -753,7 +764,7 @@ const ResObj Requestor::getNearest(size_t fieldId, util::geo::DPoint rp,
               nearestL,
               fieldId,
               fp,
-              requestRow(_objects[fieldId][nearestL].second),
+              requestRow(_objects[fieldId][nearestL].second, remoteAddr),
               geomPointGeoms(fieldId, nearestL, res),
               geomLineGeoms(fieldId, nearestL, rad / 10),
               geomPolyGeoms(fieldId, nearestL, rad / 10)};
@@ -780,7 +791,7 @@ const ResObj Requestor::getGeom(size_t fieldId, size_t id, double rad) const {
 }
 
 // _____________________________________________________________________________
-util::geo::DLine Requestor::extractLineGeom(size_t lineId) const {
+util::geo::DLine Requestor::extractLineGeom(size_t lineId, double minD) const {
   util::geo::DLine dline;
 
   size_t start = _cache->getLine(lineId);
@@ -807,6 +818,10 @@ util::geo::DLine Requestor::extractLineGeom(size_t lineId) const {
 
     util::geo::DPoint curP((mainX * M_COORD_GRANULARITY + cur.getX()) / 10.0,
                            (mainY * M_COORD_GRANULARITY + cur.getY()) / 10.0);
+
+    if (dline.size() && minD > 0 && i < end - 1 &&
+        util::geo::dist(dline.back(), curP) < minD)
+      continue;
     dline.push_back(curP);
   }
 
@@ -820,6 +835,16 @@ bool Requestor::isArea(size_t lineId) const {
   if (end == 0) return false;
 
   return isMCoord(_cache->getLinePoints()[end - 1].getX());
+}
+
+// _____________________________________________________________________________
+bool Requestor::isInnerArea(size_t lineId) const {
+  size_t end = _cache->getLineEnd(lineId);
+
+  if (end == 0) return false;
+
+  return isMCoord(_cache->getLinePoints()[end - 1].getX()) &&
+         rmCoord(_cache->getLinePoints()[end - 1].getX()) == 1;
 }
 
 // _____________________________________________________________________________
