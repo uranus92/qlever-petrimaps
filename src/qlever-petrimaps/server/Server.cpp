@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <codecvt>
+#include <cctype>
 #include <csignal>
 #include <locale>
 #include <memory>
@@ -157,7 +158,7 @@ util::http::Answer Server::handle(const util::http::Req& req, int con) const {
     } else if (cmd == "/wmts") {
       a = handleWMTSReq(params, con);
     } else if (cmd == "/wfs"){
-      a = handleWFSReq(params);
+      a = handleWFSReq(params, req.params, con);
     } else if (cmd.find("/wmts/") == 0){
       std::string wmtsPath = cmd.substr(6);
       auto parts = util::split(wmtsPath, '/');
@@ -169,16 +170,16 @@ util::http::Answer Server::handle(const util::http::Req& req, int con) const {
         throw std::invalid_argument("Invalid RESTful WMTS request.");
       }
 
-      params["SERVICE"] = "WMTS";
-      params["REQUEST"] = "GetTile";
-      params["VERSION"] = "1.0.0";
-      params["LAYER"] = parts[0];
-      params["STYLE"] = parts[1];
-      params["FORMAT"] = "image/png";
-      params["TILEMATRIXSET"] = parts[2];
-      params["TILEMATRIX"] = parts[3];
-      params["TILEROW"] = parts[4];
-      params["TILECOL"] = parts[5].substr(0, parts[5].size() - 4);
+      params["service"] = "wmts";
+      params["request"] = "gettile";
+      params["version"] = "1.0.0";
+      params["layer"] = parts[0];
+      params["style"] = parts[1];
+      params["format"] = "image/png";
+      params["tilematrixset"] = parts[2];
+      params["tilematrix"] = parts[3];
+      params["tilerow"] = parts[4];
+      params["tilecol"] = parts[5].substr(0, parts[5].size() - 4);
 
       a = handleWMTSGetTileReq(params, con);
     } else {
@@ -648,38 +649,57 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
 
   return aw;
 }
+std::string lower(std::string s) {
+  std::transform(s.begin(), s.end(), s.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+  return s;
+}
+
+const std::string* getParamCaseInsensitive(
+    const Params& pars, const std::string& key) {
+  for (const auto& entry : pars) {
+    if (lower(entry.first) == key) {
+      return &entry.second;
+    }
+  }
+  return nullptr;
+}
 // _____________________________________________________________________________
 util::http::Answer Server::handleWMTSReq(const Params& pars, int sock) const{
-  if (pars.count("REQUEST") == 0 || pars.find("REQUEST")->second.empty()) {
+  const std::string* requestParam = getParamCaseInsensitive(pars, "request");
+  if (requestParam == nullptr || requestParam->empty()) {
     throw std::invalid_argument("No WMTS request specified.");
   }
 
-  std::string request = pars.find("REQUEST")->second;
+  std::string request = lower(*requestParam);
 
-  if (request == "GetTile") {
+  if (request == "gettile") {
     return handleWMTSGetTileReq(pars, sock);
   }
 
-  if (request == "GetCapabilities") {
+  if (request == "getcapabilities") {
     return handleWMTSGetCapabilitiesReq(pars);
   }
 
   throw std::invalid_argument("Unsupported WMTS request.");
 }
 // _____________________________________________________________________________
-util::http::Answer Server::handleWFSReq(const Params& pars) const {
-  if (pars.count("REQUEST") == 0 || pars.find("REQUEST")->second.empty()) {
+util::http::Answer Server::handleWFSReq(const Params& pars,
+                                        const HeaderParams& headerPars,
+                                        int sock) const {
+  const std::string* requestParam = getParamCaseInsensitive(pars, "request");
+  if (requestParam == nullptr || requestParam->empty()) {
     throw std::invalid_argument("No WFS request specified.");
   }
 
-  std::string request = pars.find("REQUEST")->second;
+  std::string request = lower(*requestParam);
 
-  if (request == "GetCapabilities") {
+  if (request == "getcapabilities") {
     return handleWFSGetCapabilitiesReq(pars);
   }
 
-  if (request == "GetFeature") {
-    return handleWFSGetFeatureReq(pars);
+  if (request == "getfeature") {
+    return handleWFSGetFeatureReq(pars, headerPars, sock);
   }
 
   throw std::invalid_argument("Unsupported WFS request.");
@@ -688,65 +708,76 @@ util::http::Answer Server::handleWFSReq(const Params& pars) const {
 util::http::Answer Server::handleWMTSGetTileReq(const Params& pars, int sock) const {
   UNUSED(sock);
 
-  if (pars.count("SERVICE") == 0 || pars.find("SERVICE")->second.empty()) {
+  const std::string* serviceParam = getParamCaseInsensitive(pars, "service");
+  if (serviceParam == nullptr || serviceParam->empty()) {
     throw std::invalid_argument("No WMTS service specified.");
   }
 
-  if (pars.find("SERVICE")->second != "WMTS") {
+  if (lower(*serviceParam) != "wmts") {
     throw std::invalid_argument("Invalid WMTS service.");
   }
 
-  if (pars.count("VERSION") == 0 || pars.find("VERSION")->second.empty()) {
+  const std::string* versionParam = getParamCaseInsensitive(pars, "version");
+  if (versionParam == nullptr || versionParam->empty()) {
     throw std::invalid_argument("No WMTS version specified.");
   }
 
-  if (pars.find("VERSION")->second != "1.0.0") {
+  if (*versionParam != "1.0.0") {
     throw std::invalid_argument("Unsupported WMTS version.");
   }
 
-  if (pars.count("LAYER") == 0 || pars.find("LAYER")->second.empty()) {
+  const std::string* layerParam = getParamCaseInsensitive(pars, "layer");
+  if (layerParam == nullptr || layerParam->empty()) {
     throw std::invalid_argument("No WMTS layer specified.");
   }
 
-  if (pars.count("STYLE") == 0 || pars.find("STYLE")->second.empty()) {
+  const std::string* styleParam = getParamCaseInsensitive(pars, "style");
+  if (styleParam == nullptr || styleParam->empty()) {
     throw std::invalid_argument("No WMTS style specified.");
   }
 
-  if (pars.count("FORMAT") == 0 || pars.find("FORMAT")->second.empty()) {
+  const std::string* formatParam = getParamCaseInsensitive(pars, "format");
+  if (formatParam == nullptr || formatParam->empty()) {
     throw std::invalid_argument("No WMTS format specified.");
   }
 
-  if (pars.find("FORMAT")->second != "image/png") {
+  if (lower(*formatParam) != "image/png") {
     throw std::invalid_argument("Unsupported WMTS format.");
   }
 
-  if (pars.count("TILEMATRIXSET") == 0 || pars.find("TILEMATRIXSET")->second.empty()) {
+  const std::string* tileMatrixSetParam =
+      getParamCaseInsensitive(pars, "tilematrixset");
+  if (tileMatrixSetParam == nullptr || tileMatrixSetParam->empty()) {
     throw std::invalid_argument("No WMTS TileMatrixSet specified.");
   }
 
-  if (pars.find("TILEMATRIXSET")->second != "WebMercatorQuad") {
+  if (lower(*tileMatrixSetParam) != "webmercatorquad") {
     throw std::invalid_argument("Unsupported WMTS TileMatrixSet.");
   }
 
-  if (pars.count("TILEMATRIX") == 0 || pars.find("TILEMATRIX")->second.empty()) {
+  const std::string* tileMatrixParam =
+      getParamCaseInsensitive(pars, "tilematrix");
+  if (tileMatrixParam == nullptr || tileMatrixParam->empty()) {
     throw std::invalid_argument("No WMTS TileMatrix specified.");
   }
 
-  if (pars.count("TILEROW") == 0 || pars.find("TILEROW")->second.empty()) {
+  const std::string* tileRowParam = getParamCaseInsensitive(pars, "tilerow");
+  if (tileRowParam == nullptr || tileRowParam->empty()) {
     throw std::invalid_argument("No WMTS TileRow specified.");
   }
   
-  if (pars.count("TILECOL") == 0 || pars.find("TILECOL")->second.empty()) {
+  const std::string* tileColParam = getParamCaseInsensitive(pars, "tilecol");
+  if (tileColParam == nullptr || tileColParam->empty()) {
     throw std::invalid_argument("No WMTS TileCol specified.");
   }
 
-  std::string id = pars.find("LAYER")->second;
-  std::string styleStr = pars.find("STYLE")->second;
+  std::string id = *layerParam;
+  std::string styleStr = *styleParam;
   std::string heatLayer = getHeatLayer(id);
 
-  int x = atoi(pars.find("TILECOL")->second.c_str());
-  int y = atoi(pars.find("TILEROW")->second.c_str());
-  int z = atoi(pars.find("TILEMATRIX")->second.c_str());
+  int x = atoi(tileColParam->c_str());
+  int y = atoi(tileRowParam->c_str());
+  int z = atoi(tileMatrixParam->c_str());
 
   auto styleParts = util::split(styleStr, '-');
 
@@ -779,19 +810,21 @@ util::http::Answer Server::handleWMTSGetTileReq(const Params& pars, int sock) co
 // _____________________________________________________________________________
 util::http::Answer Server::handleWMTSGetCapabilitiesReq(const Params& pars) 
     const {
-  if (pars.count("SERVICE") == 0 || pars.find("SERVICE")->second.empty()) {
+  const std::string* serviceParam = getParamCaseInsensitive(pars, "service");
+  if (serviceParam == nullptr || serviceParam->empty()) {
     throw std::invalid_argument("No WMTS service specified.");
   }
 
-  if (pars.find("SERVICE")->second != "WMTS") {
+  if (lower(*serviceParam) != "wmts") {
     throw std::invalid_argument("Invalid WMTS service.");
   }
 
-  if (pars.count("VERSION") == 0 || pars.find("VERSION")->second.empty()) {
+  const std::string* versionParam = getParamCaseInsensitive(pars, "version");
+  if (versionParam == nullptr || versionParam->empty()) {
     throw std::invalid_argument("No WMTS version specified.");
   }
 
-  if (pars.find("VERSION")->second != "1.0.0") {
+  if (*versionParam != "1.0.0") {
     throw std::invalid_argument("Unsupported WMTS version.");
   }
 
@@ -902,14 +935,14 @@ util::http::Answer Server::handleWMTSGetCapabilitiesReq(const Params& pars)
     xml << "      </TileMatrixSetLink>\n";
 
     xml << "      <ResourceURL format=\"image/png\" resourceType=\"tile\" "
-        << "template=\"/wmts?SERVICE=WMTS&amp;REQUEST=GetTile&amp;VERSION=1.0.0"
-        << "&amp;LAYER=" << encodedLayerId
-        << "&amp;STYLE={Style}"
-        << "&amp;FORMAT=image/png"
-        << "&amp;TILEMATRIXSET=WebMercatorQuad"
-        << "&amp;TILEMATRIX={TileMatrix}"
-        << "&amp;TILEROW={TileRow}"
-        << "&amp;TILECOL={TileCol}\" />\n";
+        << "template=\"/wmts?service=wmts&amp;request=GetTile&amp;version=1.0.0"
+        << "&amp;layer=" << encodedLayerId
+        << "&amp;style={Style}"
+        << "&amp;format=image/png"
+        << "&amp;tilematrixset=WebMercatorQuad"
+        << "&amp;tilematrix={TileMatrix}"
+        << "&amp;tilerow={TileRow}"
+        << "&amp;tilecol={TileCol}\" />\n";
     xml << "    </Layer>\n";
   }
 
@@ -952,19 +985,20 @@ xml << "    </TileMatrixSet>\n";
 
 // _____________________________________________________________________________
 util::http::Answer Server::handleWFSGetCapabilitiesReq(const Params& pars) const {
-  if (pars.count("SERVICE") == 0 || pars.find("SERVICE")->second.empty()) {
+  const std::string* serviceParam = getParamCaseInsensitive(pars, "service");
+  if (serviceParam == nullptr || serviceParam->empty()) {
     throw std::invalid_argument("No WFS service specified.");
   }
 
-  if (pars.find("SERVICE")->second != "WFS") {
+  if (lower(*serviceParam) != "wfs") {
     throw std::invalid_argument("Invalid WFS service.");
   }
-
-  if (pars.count("VERSION") == 0 || pars.find("VERSION")->second.empty()) {
+  const std::string* versionParam = getParamCaseInsensitive(pars, "version");
+  if (versionParam == nullptr || versionParam->empty()) {
     throw std::invalid_argument("No WFS version specified.");
   }
 
-  if (pars.find("VERSION")->second != "2.0.0") {
+  if (lower(*versionParam) != "2.0.0") {
     throw std::invalid_argument("Unsupported WFS version.");
   }
 
@@ -1018,7 +1052,7 @@ util::http::Answer Server::handleWFSGetCapabilitiesReq(const Params& pars) const
   xml << "          <ows:Get xlink:href=\"/wfs\" />\n";
   xml << "        </ows:HTTP>\n";
   xml << "      </ows:DCP>\n";
-  xml << "      <ows:Parameter name=\"outputFormat\">\n";
+  xml << "      <ows:Parameter name=\"outputformat\">\n";
   xml << "        <ows:AllowedValues>\n";
   xml << "          <ows:Value>application/json</ows:Value>\n";
   xml << "        </ows:AllowedValues>\n";
@@ -1028,12 +1062,50 @@ util::http::Answer Server::handleWFSGetCapabilitiesReq(const Params& pars) const
   xml << "          <ows:AnyValue />\n";
   xml << "        </ows:AllowedValues>\n";
   xml << "      </ows:Parameter>\n";
-  xml << "      <ows:Parameter name=\"startIndex\">\n";
+  xml << "      <ows:Parameter name=\"startindex\">\n";
   xml << "        <ows:AllowedValues>\n";
   xml << "          <ows:AnyValue />\n";
   xml << "        </ows:AllowedValues>\n";
   xml << "      </ows:Parameter>\n";
   xml << "      <ows:Parameter name=\"bbox\">\n";
+  xml << "        <ows:AllowedValues>\n";
+  xml << "          <ows:AnyValue />\n";
+  xml << "        </ows:AllowedValues>\n";
+  xml << "      </ows:Parameter>\n";
+  xml << "      <ows:Parameter name=\"srsName\">\n";
+  xml << "        <ows:AllowedValues>\n";
+  xml << "          <ows:Value>EPSG:4326</ows:Value>\n";
+  xml << "          <ows:Value>urn:ogc:def:crs:EPSG::4326</ows:Value>\n";
+  xml << "          <ows:Value>EPSG:3857</ows:Value>\n";
+  xml << "          <ows:Value>urn:ogc:def:crs:EPSG::3857</ows:Value>\n";
+  xml << "        </ows:AllowedValues>\n";
+  xml << "      </ows:Parameter>\n";
+  xml << "      <ows:Parameter name=\"id\">\n";
+  xml << "        <ows:AllowedValues>\n";
+  xml << "          <ows:AnyValue />\n";
+  xml << "        </ows:AllowedValues>\n";
+  xml << "      </ows:Parameter>\n";
+  xml << "      <ows:Parameter name=\"x\">\n";
+  xml << "        <ows:AllowedValues>\n";
+  xml << "          <ows:AnyValue />\n";
+  xml << "        </ows:AllowedValues>\n";
+  xml << "      </ows:Parameter>\n";
+  xml << "      <ows:Parameter name=\"y\">\n";
+  xml << "        <ows:AllowedValues>\n";
+  xml << "          <ows:AnyValue />\n";
+  xml << "        </ows:AllowedValues>\n";
+  xml << "      </ows:Parameter>\n";
+  xml << "      <ows:Parameter name=\"rad\">\n";
+  xml << "        <ows:AllowedValues>\n";
+  xml << "          <ows:AnyValue />\n";
+  xml << "        </ows:AllowedValues>\n";
+  xml << "      </ows:Parameter>\n";
+  xml << "      <ows:Parameter name=\"width\">\n";
+  xml << "        <ows:AllowedValues>\n";
+  xml << "          <ows:AnyValue />\n";
+  xml << "        </ows:AllowedValues>\n";
+  xml << "      </ows:Parameter>\n";
+  xml << "      <ows:Parameter name=\"height\">\n";
   xml << "        <ows:AllowedValues>\n";
   xml << "          <ows:AnyValue />\n";
   xml << "        </ows:AllowedValues>\n";
@@ -1049,6 +1121,7 @@ util::http::Answer Server::handleWFSGetCapabilitiesReq(const Params& pars) const
     xml << "      <Name>" << escapedLayerId << "</Name>\n";
     xml << "      <Title>" << escapedLayerId << "</Title>\n";
     xml << "      <DefaultCRS>urn:ogc:def:crs:EPSG::4326</DefaultCRS>\n";
+    xml << "      <OtherCRS>urn:ogc:def:crs:EPSG::3857</OtherCRS>\n";
     xml << "      <OutputFormats>\n";
     xml << "        <Format>application/json</Format>\n";
     xml << "      </OutputFormats>\n";
@@ -1066,29 +1139,42 @@ util::http::Answer Server::handleWFSGetCapabilitiesReq(const Params& pars) const
 }
 
 // _____________________________________________________________________________
-util::http::Answer Server::handleWFSGetFeatureReq(const Params& pars) const {
-  if (pars.count("SERVICE") == 0 || pars.find("SERVICE")->second.empty()) {
+util::http::Answer Server::handleWFSGetFeatureReq(
+    const Params& pars, const HeaderParams& headerPars, int sock) const {
+  auto remoteAddr = remoteAddress(sock, headerPars);
+  const std::string* serviceParam = getParamCaseInsensitive(pars, "service");
+  if (serviceParam == nullptr || serviceParam->empty()) {
     throw std::invalid_argument("No WFS service specified.");
   }
 
-  if (pars.find("SERVICE")->second != "WFS") {
+  if (lower(*serviceParam) != "wfs") {
     throw std::invalid_argument("Invalid WFS service.");
   }
 
-  if (pars.count("VERSION") == 0 || pars.find("VERSION")->second.empty()) {
+  const std::string* versionParam = getParamCaseInsensitive(pars, "version");
+  if (versionParam == nullptr || versionParam->empty()) {
     throw std::invalid_argument("No WFS version specified.");
   }
 
-  if (pars.find("VERSION")->second != "2.0.0") {
+  if (lower(*versionParam) != "2.0.0") {
     throw std::invalid_argument("Unsupported WFS version.");
   }
 
+  if (getParamCaseInsensitive(pars, "x") != nullptr &&
+      getParamCaseInsensitive(pars, "y") != nullptr &&
+      getParamCaseInsensitive(pars, "rad") != nullptr) {
+    return handleWFSPickFeatureReq(pars, headerPars, sock);
+  }
+
   std::string typeName;
-  if (pars.count("TYPENAMES") != 0 && !pars.find("TYPENAMES")->second.empty()) {
-    typeName = pars.find("TYPENAMES")->second;
-  } else if (pars.count("TYPENAME") != 0 &&
-             !pars.find("TYPENAME")->second.empty()) {
-    typeName = pars.find("TYPENAME")->second;
+  const std::string* typeNamesParam =
+      getParamCaseInsensitive(pars, "typenames");
+  const std::string* typeNameParam =
+      getParamCaseInsensitive(pars, "typename");
+  if (typeNamesParam != nullptr && !typeNamesParam->empty()) {
+    typeName = *typeNamesParam;
+  } else if (typeNameParam != nullptr && !typeNameParam->empty()) {
+    typeName = *typeNameParam;
   } else {
     throw std::invalid_argument("No WFS typename specified.");
   }
@@ -1144,10 +1230,10 @@ util::http::Answer Server::handleWFSGetFeatureReq(const Params& pars) const {
   size_t total = reqor->getNumObjects(fid);
   size_t startIndex = 0;
 
-  if (pars.count("STARTINDEX") != 0 &&
-      !pars.find("STARTINDEX")->second.empty()) {
-    startIndex =
-        parseSizeParam(pars.find("STARTINDEX")->second, "STARTINDEX");
+  const std::string* startIndexParam =
+      getParamCaseInsensitive(pars, "startindex");
+  if (startIndexParam != nullptr && !startIndexParam->empty()) {
+    startIndex = parseSizeParam(*startIndexParam, "startindex");
   }
 
   if (startIndex > total) {
@@ -1158,29 +1244,53 @@ util::http::Answer Server::handleWFSGetFeatureReq(const Params& pars) const {
   FBox fbbox;
   DBox dbbox;
 
-  if (pars.count("BBOX") != 0 && !pars.find("BBOX")->second.empty()) {
-    auto bboxParts = util::split(pars.find("BBOX")->second, ',');
+  const std::string* bboxParam = getParamCaseInsensitive(pars, "bbox");
+  if (bboxParam != nullptr && !bboxParam->empty()) {
+    auto bboxParts = util::split(*bboxParam, ',');
 
+    const std::string* srsParam = getParamCaseInsensitive(pars, "srsName");
+    if (srsParam == nullptr) {
+      srsParam = getParamCaseInsensitive(pars, "crs");
+    }
+    std::string srsName = srsParam != nullptr ? lower(*srsParam) : "epsg:4326";
     if (bboxParts.size() != 4 && bboxParts.size() != 5) {
       throw std::invalid_argument("Invalid WFS BBOX specified.");
     }
 
-    double minLon = std::atof(bboxParts[0].c_str());
-    double minLat = std::atof(bboxParts[1].c_str());
-    double maxLon = std::atof(bboxParts[2].c_str());
-    double maxLat = std::atof(bboxParts[3].c_str());
+    double minX;
+    double minY;
+    double maxX;
+    double maxY;
 
-    auto lowerLeft = latLngToWebMerc<double>(minLat, minLon);
-    auto upperRight = latLngToWebMerc<double>(maxLat, maxLon);
+    if (srsName == "epsg:3857" ||
+        srsName == "urn:ogc:def:crs:epsg::3857") {
+      minX = std::atof(bboxParts[0].c_str());
+      minY = std::atof(bboxParts[1].c_str());
+      maxX = std::atof(bboxParts[2].c_str());
+      maxY = std::atof(bboxParts[3].c_str());
+    } else {
+      double minLon = std::atof(bboxParts[0].c_str());
+      double minLat = std::atof(bboxParts[1].c_str());
+      double maxLon = std::atof(bboxParts[2].c_str());
+      double maxLat = std::atof(bboxParts[3].c_str());
+      
+      auto lowerLeft = latLngToWebMerc<double>(minLat, minLon);
+      auto upperRight = latLngToWebMerc<double>(maxLat, maxLon);
 
-    double minX = std::min(lowerLeft.getX(), upperRight.getX());
-    double minY = std::min(lowerLeft.getY(), upperRight.getY());
-    double maxX = std::max(lowerLeft.getX(), upperRight.getX());
-    double maxY = std::max(lowerLeft.getY(), upperRight.getY());
+      minX = lowerLeft.getX();
+      minY = lowerLeft.getY();
+      maxX = upperRight.getX();
+      maxY = upperRight.getY();
+    }
 
-    fbbox = FBox({static_cast<float>(minX), static_cast<float>(minY)},
-                 {static_cast<float>(maxX), static_cast<float>(maxY)});
-    dbbox = DBox({minX, minY}, {maxX, maxY});
+    double normMinX = std::min(minX, maxX);
+    double normMinY = std::min(minY, maxY);
+    double normMaxX = std::max(minX, maxX);
+    double normMaxY = std::max(minY, maxY);
+
+    fbbox = FBox({static_cast<float>(normMinX), static_cast<float>(normMinY)},
+                 {static_cast<float>(normMaxX), static_cast<float>(normMaxY)});
+    dbbox = DBox({normMinX, normMinY}, {normMaxX, normMaxY});
 
     hasBbox = true;
   }
@@ -1235,8 +1345,9 @@ util::http::Answer Server::handleWFSGetFeatureReq(const Params& pars) const {
   size_t featureStart = std::min(startIndex, featureIds.size());
   size_t featureEnd = featureIds.size();
 
-  if (pars.count("COUNT") != 0 && !pars.find("COUNT")->second.empty()) {
-    size_t count = parseSizeParam(pars.find("COUNT")->second, "COUNT");
+  const std::string* countParam = getParamCaseInsensitive(pars, "count");
+  if (countParam != nullptr && !countParam->empty()) {
+    size_t count = parseSizeParam(*countParam, "count");
     if (count < featureIds.size() - featureStart) {
       featureEnd = featureStart + count;
     }
@@ -1251,7 +1362,7 @@ util::http::Answer Server::handleWFSGetFeatureReq(const Params& pars) const {
     util::json::Val dict;
     size_t row = reqor->getRow(fid, oid);
 
-    for (const auto& col : reqor->requestRow(row)) {
+    for (const auto& col : reqor->requestRow(row, remoteAddr)) {
       dict.dict[col.first] = col.second;
     }
 
@@ -1538,134 +1649,7 @@ util::http::Answer Server::handleGeoJSONReq(const Params& pars,
 util::http::Answer Server::handlePosReq(const Params& pars,
                                         const HeaderParams& headers,
                                         int sock) const {
-  auto remoteAddr = remoteAddress(sock, headers);
-
-  if (pars.count("x") == 0 || pars.find("x")->second.empty())
-    throw std::invalid_argument("No x coord (?x=) specified.");
-  float x = std::atof(pars.find("x")->second.c_str());
-
-  if (pars.count("y") == 0 || pars.find("y")->second.empty())
-    throw std::invalid_argument("No y coord (?y=) specified.");
-  float y = std::atof(pars.find("y")->second.c_str());
-
-  if (pars.count("id") == 0 || pars.find("id")->second.empty())
-    throw std::invalid_argument("No session id (?id=) specified.");
-  auto id = pars.find("id")->second;
-
-  if (pars.count("rad") == 0 || pars.find("rad")->second.empty())
-    throw std::invalid_argument("No rad (?rad=) specified.");
-  auto rad = std::atof(pars.find("rad")->second.c_str());
-
-  if (pars.count("width") == 0 || pars.find("width")->second.empty())
-    throw std::invalid_argument("No width (?width=) specified.");
-  if (pars.count("height") == 0 || pars.find("height")->second.empty())
-    throw std::invalid_argument("No height (?height=) specified.");
-
-  if (pars.count("bbox") == 0 || pars.find("bbox")->second.empty())
-    throw std::invalid_argument("No bbox specified.");
-  auto box = util::split(pars.find("bbox")->second, ',');
-
-  if (box.size() != 4) throw std::invalid_argument("Invalid request.");
-
-  double x1 = std::atof(box[0].c_str());
-  double y1 = std::atof(box[1].c_str());
-  double x2 = std::atof(box[2].c_str());
-  double y2 = std::atof(box[3].c_str());
-  double mercH = fabs(y2 - y1);
-
-  auto fbbox = FBox({x1, y1}, {x2, y2});
-
-  int h = atoi(pars.find("height")->second.c_str());
-
-  if (h <= 0 || h > 3000) throw std::invalid_argument("Invalid request");
-
-  double reso = mercH / h;
-
-  // res of -1 means dont render clusters
-  if (reso >= THRESHOLD) reso = -1;
-
-  LOG(DEBUG) << "[SERVER] Click at " << x << ", " << y;
-
-  std::shared_ptr<Requestor> reqor;
-  {
-    std::lock_guard<std::mutex> guard(_m);
-    bool has = _rs.count(id);
-    if (!has) {
-      LOG(ERROR) << "Session " << id << " not found!";
-      throw std::invalid_argument("Session not found");
-    }
-    reqor = _rs[id];
-  }
-
-  if (!reqor->ready()) {
-    throw std::invalid_argument("Session not ready.");
-  }
-  // as soon as we are ready, the reqor can be read concurrently
-
-  auto res = reqor->getNearest({x, y}, rad, reso, fbbox, remoteAddr);
-
-  std::stringstream json;
-
-  json << "[";
-
-  if (res.has) {
-    json << "{\"id\" :" << res.id;
-    json << ",\"geomfield\" :\"" << reqor->getFields()[res.fieldId].geomField
-         << "\"";
-    json << ",\"attrs\" : [";
-
-    bool first = true;
-
-    for (const auto& kv : res.cols) {
-      if (!first) {
-        json << ",";
-      }
-      json << "[\"" << util::jsonStringEscape(kv.first) << "\",\""
-           << util::jsonStringEscape(kv.second) << "\"]";
-
-      first = false;
-    }
-
-    auto ll = webMercToLatLng<float>(res.pos.getX(), res.pos.getY());
-
-    json << "]";
-    json << std::setprecision(10) << ",\"ll\":{\"lat\" : " << ll.getY()
-         << ",\"lng\":" << ll.getX() << "}";
-
-    if ((res.poly.size() != 0) + (res.point.size() != 0) +
-            (res.line.size() != 0) >
-        1) {
-      util::geo::Collection<double> col;
-      col.push_back(res.poly);
-      col.push_back(res.line);
-      col.push_back(res.point);
-
-      json << ",\"geom\":";
-      GeoJsonOutput out(json);
-      out.printLatLng(col, {});
-    } else if (res.poly.size()) {
-      json << ",\"geom\":";
-      GeoJsonOutput out(json);
-      out.printLatLng(res.poly, {});
-    } else if (res.line.size()) {
-      json << ",\"geom\":";
-      GeoJsonOutput out(json);
-      out.printLatLng(res.line, {});
-    } else {
-      json << ",\"geom\":";
-      GeoJsonOutput out(json);
-      out.printLatLng(res.point, {});
-    }
-
-    json << "}";
-  }
-
-  json << "]";
-
-  auto answ = util::http::Answer("200 OK", json.str());
-  answ.params["Content-Type"] = "application/json; charset=utf-8";
-
-  return answ;
+  return handleNearestFeatureReq(pars, headers, sock, false);
 }
 
 // _____________________________________________________________________________
@@ -1703,6 +1687,201 @@ util::http::Answer Server::handleTouchReq(const Params& pars,
   ss << "}";
 
   auto answ = util::http::Answer("200 OK", ss.str());
+  answ.params["Content-Type"] = "application/json; charset=utf-8";
+
+  return answ;
+}
+// _____________________________________________________________________________
+util::http::Answer Server::handleWFSPickFeatureReq(
+    const Params& pars, const HeaderParams& headers, int sock) const {
+  return handleNearestFeatureReq(pars, headers, sock, true);
+}
+// _____________________________________________________________________________
+util::http::Answer Server::handleNearestFeatureReq (
+    const Params& pars, const HeaderParams& headers, int sock,
+    bool isWfsRequest) const {
+  auto remoteAddr = remoteAddress(sock, headers);
+
+  if (pars.count("x") == 0 || pars.find("x")->second.empty()) 
+    throw std::invalid_argument("No x coord (?x=) specified.");
+  float x = std::atof(pars.find("x")->second.c_str());
+
+  if (pars.count("y") == 0 || pars.find("y")->second.empty()) 
+    throw std::invalid_argument("No y coord (?y=) specified.");
+  float y = std::atof(pars.find("y")->second.c_str());
+
+  if (pars.count("id") == 0 || pars.find("id")->second.empty())
+    throw std::invalid_argument("No session id (?id=) specified.");
+  auto id = pars.find("id")->second;
+
+  if (pars.count("rad") == 0 || pars.find("rad")->second.empty()) 
+    throw std::invalid_argument("No rad (?rad=) specified.");
+  float rad = std::atof(pars.find("rad")->second.c_str());
+
+  if (pars.count("width") == 0 || pars.find("width")->second.empty())
+    throw std::invalid_argument("No width (?width=) specified.");
+  if (pars.count("height") == 0 || pars.find("height")->second.empty())
+    throw std::invalid_argument("No height (?height=) specified.");
+  
+  if (pars.count("bbox") == 0 || pars.find("bbox")->second.empty())
+    throw std::invalid_argument("No bbox specified.");
+  auto box = util::split(pars.find("bbox")->second, ',');
+
+  if (box.size() != 4) throw std::invalid_argument("Invalid request.");
+  if (isWfsRequest) {
+    const std::string* srsParam = getParamCaseInsensitive(pars, "srsName");
+    if (srsParam == nullptr) {
+      srsParam = getParamCaseInsensitive(pars, "crs");
+    }
+  
+    std::string srsName = srsParam != nullptr ? lower(*srsParam) : "epsg:3857";
+
+    if (srsName != "epsg:3857" &&
+        srsName != "urn:ogc:def:crs:epsg::3857") {
+      throw std::invalid_argument("WFS pick requires EPSG:3857 coordinates.");
+    }
+  }
+  
+  double x1 = std::atof(box[0].c_str());
+  double y1 = std::atof(box[1].c_str());
+  double x2 = std::atof(box[2].c_str());
+  double y2 = std::atof(box[3].c_str());
+  double mercH = fabs(y2 - y1);
+
+  auto fbbox = FBox({x1, y1}, {x2, y2});
+
+  int h = atoi(pars.find("height")->second.c_str());
+
+  if (h <= 0 || h > 3000) throw std::invalid_argument("Invalid request");
+
+  double reso = mercH / h;
+
+  // res of -1 means dont render clusters
+  if (reso >= THRESHOLD) reso = -1;
+
+  LOG(DEBUG) << "[SERVER] WFS pick at " << x << ", " << y;
+
+  std::shared_ptr<Requestor> reqor;
+  {
+    std::lock_guard<std::mutex> guard(_m);
+    bool has = _rs.count(id);
+    if (!has) {
+      LOG(ERROR) << "Session " << id << " not found!";
+      throw std::invalid_argument("Session not found");
+    }
+    reqor = _rs[id];
+  }
+
+  if (!reqor->ready()) {
+    throw std::invalid_argument("Session not ready.");
+  }
+  // as soon as we are ready, the reqor can be read concurrently
+
+  auto res = reqor->getNearest({x, y}, rad, reso, fbbox, remoteAddr);
+
+  if (isWfsRequest) {
+    std::stringstream json;
+    json << "{\"type\":\"FeatureCollection\",\"features\":[";
+
+    if (res.has) {
+      util::json::Val dict;
+
+      dict.dict["id"] = std::to_string(res.id);
+      dict.dict["geomfield"] = reqor->getFields()[res.fieldId].geomField;
+
+      auto ll = webMercToLatLng<float>(res.pos.getX(), res.pos.getY());
+      dict.dict["popup_lat"] = std::to_string(ll.getY());
+      dict.dict["popup_lng"] = std::to_string(ll.getX());
+
+      for (const auto& kv : res.cols) {
+        dict.dict[kv.first] = kv.second;
+      }
+
+      if ((res.poly.size() != 0) + (res.point.size() != 0) +
+          (res.line.size() != 0) > 1) {
+            util::geo::Collection<double> col;
+            col.push_back(res.poly);
+            col.push_back(res.line);
+            col.push_back(res.point);
+
+            GeoJsonOutput out(json, true);
+            out.printLatLng(col, dict);
+          } else if (res.poly.size()) {
+            GeoJsonOutput out(json, true);
+            out.printLatLng(res.poly, dict);
+          } else if (res.line.size()) {
+            GeoJsonOutput out(json, true);
+            out.printLatLng(res.line, dict);
+          } else {
+            GeoJsonOutput out(json, true);
+            out.printLatLng(res.point, dict);
+          }
+      }
+      json << "]}";
+
+      auto answ = util::http::Answer("200 OK", json.str());
+      answ.params["Content-Type"] = "application/json; charset=utf-8";
+      return answ;
+  }
+
+  std::stringstream json;
+
+  json << "[";
+
+  if (res.has) {
+    json << "{\"id\" :" << res.id;
+    json << ",\"geomfield\" :\"" << reqor->getFields()[res.fieldId].geomField
+         << "\"";
+    json << ",\"attrs\" : [";
+
+    bool first = true;
+
+    for (const auto& kv : res.cols) {
+      if (!first) {
+        json << ",";
+      }
+      json << "[\"" << util::jsonStringEscape(kv.first) << "\",\""
+           << util::jsonStringEscape(kv.second) << "\"]";
+
+      first = false;
+    }
+
+    auto ll = webMercToLatLng<float>(res.pos.getX(), res.pos.getY());
+
+    json << "]";
+    json << std::setprecision(10) << ",\"ll\":{\"lat\" : " << ll.getY()
+         << ",\"lng\":" << ll.getX() << "}";
+    
+    if ((res.poly.size() != 0) + (res.point.size() != 0) +
+        (res.line.size() != 0) > 1) {
+          util::geo::Collection<double> col;
+          col.push_back(res.poly);
+          col.push_back(res.line);
+          col.push_back(res.point);
+
+          json << ",\"geom\":";
+          GeoJsonOutput out(json);
+          out.printLatLng(col, {});
+    } else if (res.poly.size()) {
+      json << ",\"geom\":";
+      GeoJsonOutput out(json);
+      out.printLatLng(res.poly, {});
+    } else if (res.line.size()) {
+      json << ",\"geom\":";
+      GeoJsonOutput out(json);
+      out.printLatLng(res.line, {});
+    } else {
+      json << ",\"geom\":";
+      GeoJsonOutput out(json);
+      out.printLatLng(res.point, {});
+    }
+
+    json << "}";
+  }
+
+  json << "]";
+
+  auto answ = util::http::Answer("200 OK", json.str());
   answ.params["Content-Type"] = "application/json; charset=utf-8";
 
   return answ;

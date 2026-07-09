@@ -232,6 +232,15 @@ class Requestor {
   bool isArea(size_t lineId) const;
   bool isInnerArea(size_t lineId) const;
 
+  double getLineDistance(
+      size_t lineId,
+      const util::geo::DPoint& queryPoint) const;
+
+  double getPolygonDistance(
+      size_t polygonId,
+      const util::geo::DPoint& queryPoint,
+      double radius) const;
+
   size_t getNumObjects() const {
     size_t ret = 0;
     for (size_t lid = 0; lid < _numObjects.size(); lid++)

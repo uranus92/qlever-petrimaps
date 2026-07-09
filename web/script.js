@@ -125,6 +125,29 @@ function openPopup(data) {
     }
 }
 
+function wfsFeatureCollectionToPopupData(data) {
+    if (!data || data.type !== "FeatureCollection" || !data.features || data.features.length == 0) {
+        return [];
+    }
+
+    const feature = data.features[0];
+    const props = feature.properties || {};
+
+    const attrs = Object.keys(props)
+        .filter(key => !["id", "geomfield", "popup_lat", "popup_lng"].includes(key))
+        .map(key => [key, String(props[key])]);
+    return [{
+        id: props.id,
+        geomfield: props.geomfield,
+        attrs: attrs,
+        ll: {
+            lat: parseFloat(props.popup_lat),
+            lng: parseFloat(props.popup_lng)
+        },
+        geom: feature.geometry
+    }];
+}
+
 function getGeoJsonLayer(geom) {
     const color = "#e6930e";
     return L.geoJSON(geom, {
@@ -343,12 +366,21 @@ function fetchResults() {
 
                 const bounds = [sw.x, sw.y, ne.x, ne.y];
 
-                fetch('pos?x=' + pos.x + "&y=" + pos.y + "&id=" + id + "&rad=" + (100 * Math.pow(2, 14 - map.getZoom())) + '&width=' + w + '&height=' + h + '&bbox=' + bounds.join(','))
+                fetch('wfs?service=WFS&version=2.0.0&request=GetFeature'
+                    + '&id=' + id
+                    + '&x=' + pos.x
+                    + '&y=' + pos.y
+                    + '&rad=' + (100 * Math.pow(2, 14 - map.getZoom()))
+                    + '&width=' + w
+                    + '&height=' + h
+                    + '&bbox=' + bounds.join(',')
+                    + '&srsName=EPSG:3857'
+                    + '&outputFormat=application/json')
                     .then(response => {
                         if (!response.ok) return response.text().then(text => {throw new Error(text)});
                         return response.json();
                     })
-                    .then(data => openPopup(data))
+                    .then(data => openPopup(wfsFeatureCollectionToPopupData(data)))
                     .catch(error => showError(error));
             });
 
