@@ -88,8 +88,6 @@ Server::Server(size_t maxMemory, const std::string& cacheDir, int cacheLifetime,
 
 // _____________________________________________________________________________
 util::http::Answer Server::handle(const util::http::Req& req, int con) const {
-  UNUSED(con);
-
   // ignore SIGPIPE
   signal(SIGPIPE, SIG_IGN);
 
@@ -99,25 +97,29 @@ util::http::Answer Server::handle(const util::http::Req& req, int con) const {
     auto cmd = parseUrl(req.url, req.payload, &params);
 
     if (cmd == "/") {
-      a = handleIndexReq(params);
+      a = handleIndexReq(params, con);
     } else if (cmd == "/example") {
-      a = handleExamplePageReq(params);
+      a = handleExamplePageReq(params, con);
     } else if (cmd == "/touch") {
-      a = handleTouchReq(params, req.params);
+      a = handleTouchReq(params, req.params, con);
     } else if (cmd == "/query") {
-      a = handleQueryReq(params, req.params);
+      LOG(INFO) << "Query request from " << remoteAddress(con, req.params);
+      a = handleQueryReq(params, req.params, con);
     } else if (cmd == "/geojson") {
-      a = handleGeoJSONReq(params);
+      LOG(INFO) << "Geojson request from " << remoteAddress(con, req.params);
+      a = handleGeoJSONReq(params, req.params, con);
     } else if (cmd == "/clearsession") {
-      a = handleClearSessReq(params, req.params);
+      a = handleClearSessReq(params, req.params, con);
     } else if (cmd == "/clearsessions") {
-      a = handleClearSessReq(params, req.params);
+      a = handleClearSessReq(params, req.params, con);
     } else if (cmd == "/pos") {
-      a = handlePosReq(params);
+      LOG(INFO) << "Position request from " << remoteAddress(con, req.params);
+      a = handlePosReq(params, req.params, con);
     } else if (cmd == "/export") {
-      a = handleExportReq(params, con);
+      LOG(INFO) << "Export request from " << remoteAddress(con, req.params);
+      a = handleExportReq(params, req.params, con);
     } else if (cmd == "/loadstatus") {
-      a = handleLoadStatusReq(params);
+      a = handleLoadStatusReq(params, req.params, con);
     } else if (cmd == "/build.js") {
       a = util::http::Answer(
           "200 OK", std::string(build_js, build_js + sizeof build_js /
@@ -347,9 +349,6 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
   size_t fid = r->getFieldId(field);
 
   checkMem(sizeof(float) * w * h, _maxMemory);
-  heatmap_t* hm = heatmap_new(w, h);
-  hm->max = r->getValRange(fid).second;
-
   double realCellSize = r->getPointGrid(fid).getCellWidth();
   double virtCellSize = res * 2.5;
 
@@ -364,7 +363,7 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
   checkMem(sizeof(unsigned char) * w * h * 4 +
                sizeof(unsigned char) * w * h * 4 * NUM_THREADS * 2,
            _maxMemory);
-  RenderContext rcontext(w, h, style, NUM_THREADS);
+  RenderContext rcontext(w, h, orx, ory, mercW, mercH, style, NUM_THREADS);
 
   // POINTS
   if (intersects(r->getPointGrid(fid).getBBox(), fbbox)) {
@@ -386,29 +385,29 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
 
           const auto& cp = r->clusterGeom(fid, oid, res);
 
-          auto px = mercToPx(cp, orx, ory, mercW, mercH, w, h);
-          auto ppx = mercToPx(p, orx, ory, mercW, mercH, w, h);
+          auto px = RenderContext::mercToPx(cp, orx, ory, mercW, mercH, w, h);
+          auto ppx = RenderContext::mercToPx(p, orx, ory, mercW, mercH, w, h);
 
-          rcontext.drawPoint(0, px.getX(), px.getY(), w, h, r->getVal(fid, oid),
-                             0, 0);
-          rcontext.drawLine(px.getX(), px.getY(), ppx.getX(), ppx.getY(), w, h);
+          rcontext.drawPoint(0, px.getX(), px.getY(), r->getVal(fid, oid), 0, 0,
+                             1);
+          rcontext.drawLineSegment(px.getX(), px.getY(), ppx.getX(), ppx.getY(),
+                                   w, h);
         } else {
           if (r->isCluster(fid, oid)) oid = r->getCluster(fid, oid).first;
 
           FPoint p = r->getPoint(fid, oid);
           if (!contains(p, fbbox)) continue;
 
-          auto px = mercToPx(p, orx, ory, mercW, mercH, w, h);
+          auto px = RenderContext::mercToPx(p, orx, ory, mercW, mercH, w, h);
 
           if (style == RASTER) {
             auto rasterMeta =
                 r->getRasterMetas(fid, oid, {rasterWidth, rasterHeight});
-            rcontext.drawPoint(0, px.getX(), px.getY(), w, h,
-                               r->getVal(fid, oid), rasterMeta.first,
-                               rasterMeta.second);
+            rcontext.drawPoint(0, px.getX(), px.getY(), r->getVal(fid, oid),
+                               rasterMeta.first, rasterMeta.second, 1);
           } else {
-            rcontext.drawPoint(0, px.getX(), px.getY(), w, h,
-                               r->getVal(fid, oid), 0, 0);
+            rcontext.drawPoint(0, px.getX(), px.getY(), r->getVal(fid, oid), 0,
+                               0, 1);
           }
         }
       }
@@ -430,28 +429,29 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
           const auto& cellBox = grid.getBox(x, y);
 
           if (subCellSize == 1) {
-            auto px =
-                mercToPx(cellBox.getLowerLeft(), orx, ory, mercW, mercH, w, h);
+            auto px = RenderContext::mercToPx(cellBox.getLowerLeft(), orx, ory,
+                                              mercW, mercH, w, h);
 
             // TODO: just setting rasterWidth to 1x1 here is not correct
-            rcontext.drawPoint(tid, px.getX(), px.getY(), w, h,
-                               grid.getCellSum(x, y), 1, 1);
+            rcontext.drawPoint(tid, px.getX(), px.getY(), grid.getCellSum(x, y),
+                               1, 1, 1);
           } else {
             for (auto oid : *cell) {
               if (r->isCluster(fid, oid)) oid = r->getCluster(fid, oid).first;
 
               FPoint p = r->getPoint(fid, oid);
-              auto px = mercToPx(p, orx, ory, mercW, mercH, w, h);
+              auto px =
+                  RenderContext::mercToPx(p, orx, ory, mercW, mercH, w, h);
 
               if (style == RASTER) {
                 auto rasterMeta =
                     r->getRasterMetas(fid, oid, {rasterWidth, rasterHeight});
-                rcontext.drawPoint(tid, px.getX(), px.getY(), w, h,
+                rcontext.drawPoint(tid, px.getX(), px.getY(),
                                    r->getVal(fid, oid), rasterMeta.first,
-                                   rasterMeta.second);
+                                   rasterMeta.second, 1);
               } else {
-                rcontext.drawPoint(tid, px.getX(), px.getY(), w, h,
-                                   r->getVal(fid, oid), 0, 0);
+                rcontext.drawPoint(tid, px.getX(), px.getY(),
+                                   r->getVal(fid, oid), 0, 0, 1);
               }
             }
           }
@@ -478,19 +478,26 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
         if (idx > 0 && ret[idx] == ret[idx - 1]) continue;
         auto lineId = r->getObjects(fid)[ret[idx]].first;
         auto oid = r->getObjects(fid)[ret[idx]].second;
-        if (!r->lineIntersects(lineId, bbox)) continue;
+        if (!util::geo::intersects(r->getLineBBox(lineId - I_OFFSET), bbox))
+          continue;
 
-        const auto& denseLine =
-            densify(r->extractLineGeom(lineId - I_OFFSET), res);
-
-        for (const auto& p : denseLine) {
-          auto pix = mercToPx(p, orx, ory, mercW, mercH, w, h);
-          rcontext.drawPoint(0, pix.getX(), pix.getY(), w, h,
-                             r->getVal(fid, oid), rasterWidth, rasterHeight);
+        if (r->isArea(lineId - I_OFFSET) &&
+            !r->isInnerArea(lineId - I_OFFSET)) {
+          rcontext.drawArea(0, r->extractLineGeom(lineId - I_OFFSET, 3 * res),
+                            r->getVal(fid, oid));
+        } else if (r->isArea(lineId - I_OFFSET) &&
+                   r->isInnerArea(lineId - I_OFFSET)) {
+          rcontext.drawArea(0, r->extractLineGeom(lineId - I_OFFSET, 3 * res),
+                            r->getVal(fid, oid), true, true);
+        } else {
+          if (!r->lineIntersects(lineId, bbox)) continue;
+          rcontext.drawLine(0, r->extractLineGeom(lineId - I_OFFSET, 3 * res),
+                            r->getVal(fid, oid));
         }
       }
     } else {
       const auto& lpgrid = r->getLinePointGrid(fid);
+      const auto& agrid = r->getAreaGrid(fid);
       auto iBox = intersection(lpgrid.getBBox(), fbbox);
 
 #pragma omp parallel for num_threads(NUM_THREADS) schedule(static)
@@ -506,11 +513,11 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
           const auto& cellBox = lpgrid.getBox(x, y);
 
           if (subCellSize == 1) {
-            auto pix =
-                mercToPx(cellBox.getLowerLeft(), orx, ory, mercW, mercH, w, h);
-            rcontext.drawPoint(tid, pix.getX(), pix.getY(), w, h,
+            auto pix = RenderContext::mercToPx(cellBox.getLowerLeft(), orx, ory,
+                                               mercW, mercH, w, h);
+            rcontext.drawPoint(tid, pix.getX(), pix.getY(),
                                lpgrid.getCellSum(x, y), rasterWidth,
-                               rasterHeight);
+                               rasterHeight, 0);
           } else {
             for (const auto& p : *cell) {
               int px = ((cellBox.getLowerLeft().getX() + p.getX() * 256 -
@@ -521,16 +528,43 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
                              bbox.getLowerLeft().getY()) /
                             mercH) *
                                h;
-              rcontext.drawPoint(tid, px, py, w, h, 1, rasterWidth,
-                                 rasterHeight);
+              rcontext.drawPoint(tid, px, py, 1, rasterWidth, rasterHeight, 0);
             }
           }
+        }
+      }
+
+      std::vector<ID_TYPE> ret;
+
+      // retrieve very large areas for fill
+      agrid.get(fbbox, &ret);
+
+      // sort to avoid duplicates
+      std::sort(ret.begin(), ret.end());
+
+      for (size_t idx = 0; idx < ret.size(); idx++) {
+        if (idx > 0 && ret[idx] == ret[idx - 1]) continue;
+        auto lineId = r->getObjects(fid)[ret[idx]].first;
+        auto oid = r->getObjects(fid)[ret[idx]].second;
+        auto geom = r->extractLineGeom(lineId - I_OFFSET, res);
+        if (r->isInnerArea(lineId - I_OFFSET)) {
+          rcontext.drawArea(0, geom, r->getVal(fid, oid), true, true);
+        } else {
+          rcontext.drawArea(0, geom, r->getVal(fid, oid), true);
         }
       }
     }
   }
   LOG(INFO) << "[SERVER] Adding points to heatmap...";
-  rcontext.writeHeatmap(hm, res);
+  heatmap_t* hm = heatmap_new(w, h);
+  heatmap_t* hmInterior = heatmap_new(w, h);
+  hm->max = r->getValRange(fid).second;
+
+  rcontext.writeHeatmap(hm);
+
+  if (style == OBJECTS) {
+    rcontext.writeInteriorObjects(hmInterior);
+  }
   LOG(INFO) << "[SERVER] ...done";
 
   LOG(INFO) << "[SERVER] Rendering heatmap...";
@@ -538,22 +572,38 @@ util::http::Answer Server::handleHeatMapReq(const Params& pars,
   if (style == RASTER) {
     heatmap_render_to(hm, colorScheme, &rcontext.getImage()[0]);
   } else if (style == OBJECTS) {
-    unsigned char discrete_data[] = {
+    unsigned char fillColors[] = {
         0,         0,         0,         0,         0,         0,
-        0,         0,         objColorR, objColorG, objColorB, 16,
-        objColorR, objColorG, objColorB, 32,        objColorR, objColorG,
+        0,         0,         objColorR, objColorG, objColorB, 8,
+        objColorR, objColorG, objColorB, 16,        objColorR, objColorG,
+        objColorB, 32,        objColorR, objColorG, objColorB, 64,
+        objColorR, objColorG, objColorB, 80,        objColorR, objColorG,
+        objColorB, 96,        objColorR, objColorG, objColorB, 112,
+        objColorR, objColorG, objColorB, 127};
+    heatmap_colorscheme_t fillColorScheme = {
+        fillColors, sizeof(fillColors) / sizeof(fillColors[0]) / 4};
+
+    heatmap_render_saturated_to(hmInterior, &fillColorScheme, 1,
+                                &rcontext.getImage()[0]);
+
+    unsigned char borderColors[] = {
+        0,         0,         0,         0,         0,         0,
+        0,         0,         objColorR, objColorG, objColorB, 64,
+        objColorR, objColorG, objColorB, 64,        objColorR, objColorG,
         objColorB, 64,        objColorR, objColorG, objColorB, 128,
         objColorR, objColorG, objColorB, 160,       objColorR, objColorG,
         objColorB, 192,       objColorR, objColorG, objColorB, 224,
         objColorR, objColorG, objColorB, 255};
-    heatmap_colorscheme_t discrete = {
-        discrete_data, sizeof(discrete_data) / sizeof(discrete_data[0]) / 4};
+    heatmap_colorscheme_t borderColorScheme = {
+        borderColors, sizeof(borderColors) / sizeof(borderColors[0]) / 4};
 
-    heatmap_render_saturated_to(hm, &discrete, 1, &rcontext.getImage()[0]);
+    heatmap_render_saturated_to(hm, &borderColorScheme, 1,
+                                &rcontext.getImage()[0]);
   } else {
     heatmap_render_to(hm, colorScheme, &rcontext.getImage()[0]);
   }
   heatmap_free(hm);
+  heatmap_free(hmInterior);
 
   LOG(INFO) << "[SERVER] ...done";
   LOG(INFO) << "[SERVER] Generating PNG...";
@@ -1028,7 +1078,11 @@ return handleHeatMapReq(heatPars, sock);
 }
 
 // _____________________________________________________________________________
-util::http::Answer Server::handleGeoJSONReq(const Params& pars) const {
+util::http::Answer Server::handleGeoJSONReq(const Params& pars,
+                                            const HeaderParams& headers,
+                                            int sock) const {
+  auto remoteAddr = remoteAddress(sock, headers);
+
   if (pars.count("id") == 0 || pars.find("id")->second.empty())
     throw std::invalid_argument("No session id (?id=) specified.");
   auto id = pars.find("id")->second;
@@ -1086,7 +1140,7 @@ util::http::Answer Server::handleGeoJSONReq(const Params& pars) const {
       throw std::invalid_argument("Invalid request.");
     }
 
-    for (auto col : reqor->requestRow(row)) {
+    for (auto col : reqor->requestRow(row, remoteAddr)) {
       dict.dict[col.first] = col.second;
     }
   }
@@ -1125,7 +1179,11 @@ util::http::Answer Server::handleGeoJSONReq(const Params& pars) const {
 }
 
 // _____________________________________________________________________________
-util::http::Answer Server::handlePosReq(const Params& pars) const {
+util::http::Answer Server::handlePosReq(const Params& pars,
+                                        const HeaderParams& headers,
+                                        int sock) const {
+  auto remoteAddr = remoteAddress(sock, headers);
+
   if (pars.count("x") == 0 || pars.find("x")->second.empty())
     throw std::invalid_argument("No x coord (?x=) specified.");
   float x = std::atof(pars.find("x")->second.c_str());
@@ -1188,7 +1246,7 @@ util::http::Answer Server::handlePosReq(const Params& pars) const {
   }
   // as soon as we are ready, the reqor can be read concurrently
 
-  auto res = reqor->getNearest({x, y}, rad, reso, fbbox);
+  auto res = reqor->getNearest({x, y}, rad, reso, fbbox, remoteAddr);
 
   std::stringstream json;
 
@@ -1255,8 +1313,11 @@ util::http::Answer Server::handlePosReq(const Params& pars) const {
 }
 
 // _____________________________________________________________________________
-util::http::Answer Server::handleTouchReq(
-    const Params& pars, const HeaderParams& headerParams) const {
+util::http::Answer Server::handleTouchReq(const Params& pars,
+                                          const HeaderParams& headerParams,
+                                          int sock) const {
+  auto remoteAddr = remoteAddress(sock, headerParams);
+
   if (pars.count("backend") == 0 || pars.find("backend")->second.empty())
     throw std::invalid_argument("No backend (?backend=) specified.");
 
@@ -1273,9 +1334,10 @@ util::http::Answer Server::handleTouchReq(
     configJson = pars.find("cfg")->second;
   }
 
-  auto backendCfg = getGeomCacheConfig(backend, accessToken, configJson);
+  auto backendCfg =
+      getGeomCacheConfig(backend, accessToken, configJson, remoteAddr);
 
-  createCache(backend, backendCfg);
+  createCache(backendCfg);
   std::shared_ptr<GeomCache> cache = _caches[backend];
 
   std::stringstream ss;
@@ -1291,8 +1353,9 @@ util::http::Answer Server::handleTouchReq(
 }
 
 // _____________________________________________________________________________
-util::http::Answer Server::handleClearSessReq(
-    const Params& pars, const HeaderParams& headerParams) const {
+util::http::Answer Server::handleClearSessReq(const Params& pars,
+                                              const HeaderParams& headerParams,
+                                              int) const {
   std::string id;
   if (pars.count("id") != 0 && !pars.find("id")->second.empty())
     id = pars.find("id")->second;
@@ -1321,7 +1384,7 @@ util::http::Answer Server::handleClearSessReq(
 }
 
 // _____________________________________________________________________________
-util::http::Answer Server::handleExamplePageReq(const Params&) const {
+util::http::Answer Server::handleExamplePageReq(const Params&, int) const {
   std::string html =
       std::string(example_html,
                   example_html + sizeof example_html / sizeof example_html[0]);
@@ -1333,7 +1396,7 @@ util::http::Answer Server::handleExamplePageReq(const Params&) const {
 }
 
 // _____________________________________________________________________________
-util::http::Answer Server::handleIndexReq(const Params& pars) const {
+util::http::Answer Server::handleIndexReq(const Params& pars, int) const {
   std::stringstream ss;
   ss << "window.postParams =";
 
@@ -1357,9 +1420,12 @@ util::http::Answer Server::handleIndexReq(const Params& pars) const {
 
 // _____________________________________________________________________________
 util::http::Answer Server::handleQueryReq(const Params& pars,
-                                          const HeaderParams&) const {
+                                          const HeaderParams& headers,
+                                          int sock) const {
   if (pars.count("backend") == 0 || pars.find("backend")->second.empty())
     throw std::invalid_argument("No backend (?backend=) specified.");
+
+  auto remoteAddr = remoteAddress(sock, headers);
 
   RequestorConfig rcfg;
 
@@ -1402,13 +1468,13 @@ util::http::Answer Server::handleQueryReq(const Params& pars,
 
   const std::string& backend = pars.find("backend")->second;
 
-  auto backendCfg = getGeomCacheConfig(backend, "", "");
+  auto backendCfg = getGeomCacheConfig(backend, "", "", remoteAddr);
 
-  LOG(INFO) << "[SERVER] Queried backend is " << backend;
+  LOG(INFO) << "[SERVER] Queried backend is " << backendCfg.backend;
   LOG(INFO) << "[SERVER] Query is:\n" << rcfg.query;
 
-  createCache(backend, backendCfg);
-  std::string indexHash = loadCache(backend, backendCfg);
+  createCache(backendCfg);
+  std::string indexHash = loadCache(backendCfg);
 
   std::string queryId = backend + "$" + indexHash + "$" + rcfg.getHash();
 
@@ -1433,7 +1499,7 @@ util::http::Answer Server::handleQueryReq(const Params& pars,
   }
 
   try {
-    reqor->request();
+    reqor->request(remoteAddr);
   } catch (OutOfMemoryError& ex) {
     LOG(ERROR) << ex.what() << backendCfg.backend;
 
@@ -1652,11 +1718,15 @@ void Server::clearOldSessions() const {
 }
 
 // _____________________________________________________________________________
-util::http::Answer Server::handleExportReq(const Params& pars, int sock) const {
+util::http::Answer Server::handleExportReq(const Params& pars,
+                                           const HeaderParams& headers,
+                                           int sock) const {
   // ignore SIGPIPE
   signal(SIGPIPE, SIG_IGN);
 
   auto aw = util::http::Answer("200 OK", "");
+
+  auto remoteAddr = remoteAddress(sock, headers);
 
   if (pars.count("id") == 0 || pars.find("id")->second.empty())
     throw std::invalid_argument("No session id (?id=) specified.");
@@ -1779,7 +1849,8 @@ util::http::Answer Server::handleExportReq(const Params& pars, int sock) const {
           }
           writes += out;
         }
-      });
+      },
+      remoteAddr);
 
   buff = "]}";
   writes = 0;
@@ -1799,15 +1870,19 @@ util::http::Answer Server::handleExportReq(const Params& pars, int sock) const {
 }
 
 // _____________________________________________________________________________
-util::http::Answer Server::handleLoadStatusReq(const Params& pars) const {
+util::http::Answer Server::handleLoadStatusReq(const Params& pars,
+                                               const HeaderParams& headers,
+                                               int sock) const {
   if (pars.count("backend") == 0 || pars.find("backend")->second.empty())
     throw std::invalid_argument("No backend (?backend=) specified.");
 
+  auto remoteAddr = remoteAddress(sock, headers);
+
   const std::string& backend = pars.find("backend")->second;
 
-  auto backendCfg = getGeomCacheConfig(backend, "", "");
+  auto backendCfg = getGeomCacheConfig(backend, "", "", remoteAddr);
 
-  createCache(backend, backendCfg);
+  createCache(backendCfg);
   std::shared_ptr<GeomCache> cache = _caches[backendCfg.backend];
 
   // We have 3 loading stages:
@@ -1868,38 +1943,36 @@ double Server::getLoadStatusPercent() const {
 }
 
 // _____________________________________________________________________________
-void Server::createCache(const std::string& backend,
-                         const GeomCacheConfig& cfg) const {
+void Server::createCache(const GeomCacheConfig& cfg) const {
   std::shared_ptr<GeomCache> cache;
 
   {
     std::lock_guard<std::mutex> guard(_m);
-    if (_caches.count(backend)) {
-      cache = _caches[backend];
+    if (_caches.count(cfg.backend)) {
+      cache = _caches[cfg.backend];
       // always set config
       if (cache->setConfig(cfg)) {
-        LOG(INFO) << "Updating config for backend '" << backend
+        LOG(INFO) << "Updating config for backend '" << cfg.backend
                   << "', new fill query is:\n"
                   << cfg.fillQuery;
       }
     } else {
       cache = std::shared_ptr<GeomCache>(new GeomCache(cfg, _maxMemory));
-      _caches[backend] = cache;
+      _caches[cfg.backend] = cache;
     }
   }
 }
 
 // _____________________________________________________________________________
-std::string Server::loadCache(const std::string& backend,
-                              const GeomCacheConfig&) const {
-  std::shared_ptr<GeomCache> cache = _caches[backend];
+std::string Server::loadCache(const GeomCacheConfig& cfg) const {
+  std::shared_ptr<GeomCache> cache = _caches[cfg.backend];
 
   try {
     return cache->load(_cacheDir);
   } catch (...) {
     std::lock_guard<std::mutex> guard(_m);
 
-    auto it = _caches.find(backend);
+    auto it = _caches.find(cfg.backend);
     if (it != _caches.end()) _caches.erase(it);
 
     throw;
@@ -2003,11 +2076,28 @@ GeomCacheConfig Server::getGeomCacheCfgFromJSON(
 // _____________________________________________________________________________
 GeomCacheConfig Server::getGeomCacheConfig(
     const std::string& backendUrl, const std::string& accessToken,
-    const std::string& configJson) const {
-  auto canonizedBackend = canonizeURL(backendUrl);
+    const std::string& configJson, const std::string& remoteAddr) const {
+  std::string canonizedBackend;
+
+  // first check if we have it cached
+  {
+    std::lock_guard<std::mutex> guard(_m);
+    auto i = _canonizedURLCache.find(backendUrl);
+    if (i != _canonizedURLCache.end()) {
+      canonizedBackend = i->second;
+    }
+  }
+
+  if (canonizedBackend.size() == 0) {
+    // if not cache, perform the canonizeURL request lock-free
+    canonizedBackend = canonizeURL(backendUrl, remoteAddr);
+
+    // only lock for writing
+    std::lock_guard<std::mutex> guard(_m);
+    _canonizedURLCache[backendUrl] = canonizedBackend;
+  }
 
   std::lock_guard<std::mutex> guard(_m);
-
   auto cfg = _cacheConfigs.find(canonizedBackend);
   if (cfg != _cacheConfigs.end()) {
     if (configJson.size()) {
@@ -2037,20 +2127,6 @@ GeomCacheConfig Server::getGeomCacheConfig(
         canonizedBackend, petrimaps::getFillQuery(canonizedBackend)};
   }
   return _cacheConfigs[canonizedBackend];
-}
-
-// _____________________________________________________________________________
-util::geo::Point<int> Server::mercToPx(FPoint p, double orx, double ory,
-                                       double mercW, double mercH, int w,
-                                       int h) const {
-  return {((p.getX() - orx) / mercW) * w, h - ((p.getY() - ory) / mercH) * h};
-}
-
-// _____________________________________________________________________________
-util::geo::Point<int> Server::mercToPx(DPoint p, double orx, double ory,
-                                       double mercW, double mercH, int w,
-                                       int h) const {
-  return {((p.getX() - orx) / mercW) * w, h - ((p.getY() - ory) / mercH) * h};
 }
 
 // _____________________________________________________________________________

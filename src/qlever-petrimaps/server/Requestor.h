@@ -80,13 +80,6 @@ struct ResObj {
   util::geo::MultiPolygon<double> poly;
 };
 
-struct ReaderCbPair {
-  RequestReader* reader;
-  std::function<void(
-      std::vector<std::vector<std::pair<std::string, std::string>>>)>
-      cb;
-};
-
 class Requestor {
  public:
   Requestor() : _maxMemory(-1) {}
@@ -126,15 +119,16 @@ class Requestor {
     }
   }
 
-  void request();
+  void request(const std::string& remoteAddr);
 
   std::vector<std::pair<std::string, std::string>> requestRow(
-      uint64_t row) const;
+      uint64_t row, const std::string& remoteAddr) const;
 
   void requestRows(
       std::function<
           void(std::vector<std::vector<std::pair<std::string, std::string>>>)>
-          cb) const;
+          cb,
+      const std::string& remoteAddr) const;
 
   const petrimaps::Grid<ID_TYPE, float, float>& getPointGrid(
       size_t fieldId) const {
@@ -149,6 +143,11 @@ class Requestor {
   const petrimaps::Grid<util::geo::Point<uint8_t>, float, float>&
   getLinePointGrid(size_t fieldId) const {
     return _lpgrid[fieldId];
+  }
+
+  const petrimaps::Grid<ID_TYPE, float, float>& getAreaGrid(
+      size_t fieldId) const {
+    return _agrid[fieldId];
   }
 
   const std::vector<std::pair<ID_TYPE, ID_TYPE>>& getObjects(
@@ -201,7 +200,9 @@ class Requestor {
 
   size_t getLineEnd(ID_TYPE id) const { return _cache->getLineEnd(id); }
 
-  const std::vector<util::geo::Point<int16_t>>& getLinePoints() const {
+  const std::vector<util::geo::Point<int16_t>,
+                    util::no_init_allocator<util::geo::Point<int16_t>>>&
+  getLinePoints() const {
     return _cache->getLinePoints();
   }
 
@@ -210,10 +211,12 @@ class Requestor {
   }
 
   const ResObj getNearest(size_t lid, util::geo::DPoint p, double rad,
-                          double res, util::geo::FBox box) const;
+                          double res, util::geo::FBox box,
+                          const std::string& remoteAddr) const;
 
   const ResObj getNearest(util::geo::DPoint p, double rad, double res,
-                          util::geo::FBox box) const;
+                          util::geo::FBox box,
+                          const std::string& remoteAddr) const;
 
   const ResObj getGeom(size_t lid, size_t id, double rad) const;
 
@@ -225,8 +228,9 @@ class Requestor {
                                                double res) const;
   util::geo::MultiPoint<double> geomPointGeoms(size_t lid, size_t oid) const;
 
-  util::geo::DLine extractLineGeom(size_t lineId) const;
+  util::geo::DLine extractLineGeom(size_t lineId, double minD = 0) const;
   bool isArea(size_t lineId) const;
+  bool isInnerArea(size_t lineId) const;
 
   size_t getNumObjects() const {
     size_t ret = 0;
@@ -308,6 +312,7 @@ class Requestor {
 
   std::vector<petrimaps::Grid<ID_TYPE, float, float>> _pgrid;
   std::vector<petrimaps::Grid<ID_TYPE, float, float>> _lgrid;
+  std::vector<petrimaps::Grid<ID_TYPE, float, float>> _agrid;
   std::vector<petrimaps::Grid<util::geo::Point<uint8_t>, float, float>> _lpgrid;
 
   bool _ready = false;

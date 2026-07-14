@@ -94,16 +94,14 @@ inline bool operator!=(const GeomCacheConfig& l, const GeomCacheConfig& r) {
 
 class GeomCache {
  public:
-  GeomCache() : _config(), _curl(0), _curRow(0), _maxMemory(-1) {}
+  GeomCache() : _config(), _curRow(0), _maxMemory(-1) {}
   explicit GeomCache(const GeomCacheConfig& config, size_t maxMemory)
       : _config(config),
-        _curl(curl_easy_init()),
         _curRow(0),
         _maxMemory(maxMemory) {}
 
   GeomCache& operator=(GeomCache&& o) {
     _config = o._config;
-    _curl = curl_easy_init();
     _lines = std::move(o._lines);
     _linePoints = std::move(o._linePoints);
     _points = std::move(o._points);
@@ -111,10 +109,6 @@ class GeomCache {
     _state = o._state;
     return *this;
   };
-
-  ~GeomCache() {
-    if (_curl) curl_easy_cleanup(_curl);
-  }
 
   bool ready() const {
     _m.lock();
@@ -141,13 +135,21 @@ class GeomCache {
 
   const GeomCacheConfig& getConfig() const { return _config; }
 
-  const std::vector<util::geo::FPoint>& getPoints() const { return _points; }
+  const std::vector<util::geo::FPoint,
+                    util::no_init_allocator<util::geo::FPoint>>&
+  getPoints() const {
+    return _points;
+  }
 
-  const std::vector<util::geo::Point<int16_t>>& getLinePoints() const {
+  const std::vector<util::geo::Point<int16_t>,
+                    util::no_init_allocator<util::geo::Point<int16_t>>>&
+  getLinePoints() const {
     return _linePoints;
   }
 
-  const std::vector<size_t>& getLines() const { return _lines; }
+  const std::vector<size_t, util::no_init_allocator<size_t>>& getLines() const {
+    return _lines;
+  }
 
   util::geo::FBox getPointBBox(size_t id) const {
     return util::geo::getBoundingBox(_points[id]);
@@ -156,7 +158,7 @@ class GeomCache {
 
   void serializeToDisk(const std::string& fname) const;
 
-  void fromDisk(const std::string& fname);
+  void fromDisk(const std::string& fname, size_t blockSize = 1024 * 1024);
 
   size_t getLine(ID_TYPE id) const { return _lines[id]; }
   bool setConfig(const GeomCacheConfig& cfg) {
@@ -184,7 +186,6 @@ class GeomCache {
 
  private:
   GeomCacheConfig _config;
-  CURL* _curl;
 
   uint8_t _curByte;
   ID _curId;
@@ -197,12 +198,6 @@ class GeomCache {
 
   enum _LoadStatusStages { Parse = 1, ParseIds, FromFile, Finished };
   _LoadStatusStages _loadStatusStage = Parse;
-
-  static size_t writeCb(void* contents, size_t size, size_t nmemb, void* userp);
-  static size_t writeCbIds(void* contents, size_t size, size_t nmemb,
-                           void* userp);
-  static size_t writeCbCount(void* contents, size_t size, size_t nmemb,
-                             void* userp);
 
   // Get the right SPARQL query for the given backend.
   const std::string& getFillQuery() const;
@@ -222,7 +217,7 @@ class GeomCache {
   void addLineString(const util::geo::Line<double>& l, size_t* i);
   void addMultiPolygon(const util::geo::MultiPolygon<double>& mp, size_t* i);
 
-  void insertLine(const util::geo::DLine& l, bool isArea);
+  void insertLine(const util::geo::DLine& l, bool isArea, bool isInner = false);
 
   static std::vector<size_t> getGeomStarts(const std::string& str, size_t a);
 
@@ -230,9 +225,12 @@ class GeomCache {
     return util::geo::latLngToWebMerc<double>(p);
   }
 
-  std::vector<util::geo::FPoint> _points;
-  std::vector<util::geo::Point<int16_t>> _linePoints;
-  std::vector<size_t> _lines;
+  std::vector<util::geo::FPoint, util::no_init_allocator<util::geo::FPoint>>
+      _points;
+  std::vector<util::geo::Point<int16_t>,
+              util::no_init_allocator<util::geo::Point<int16_t>>>
+      _linePoints;
+  std::vector<size_t, util::no_init_allocator<size_t>> _lines;
 
   size_t _pointsFSize;
   size_t _linePointsFSize;
@@ -255,12 +253,10 @@ class GeomCache {
 
   IdMapping _lastQidToId;
 
-  std::vector<IdMapping> _qidToId;
+  std::vector<IdMapping, util::no_init_allocator<IdMapping>> _qidToId;
 
   std::string _dangling, _prev, _raw;
   ParseState _state;
-
-  std::exception_ptr _exceptionPtr;
 
   mutable std::mutex _m;
   bool _ready = false;
