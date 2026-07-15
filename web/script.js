@@ -59,7 +59,7 @@ function openPopup(data) {
         //
         // NOTE: We assume that the last column contains the geometry information
         // (WKT), which we will not put in the table.
-        let geometry_column = select_variables.length - 1;
+        // let geometry_column = select_variables.length - 1;
         // If the second to last variable exists and is called "?image" or ends in
         // "_image", then show an image with that URL in the first column of the
         // table. Note that we compute the cell contents here and add it during the
@@ -84,7 +84,7 @@ function openPopup(data) {
         select_variables.forEach(function(variable, i) {
             // Skip the last column (WKT literal) and the ?image column (if it
             // exists).
-            if (i == geometry_column ||
+            if (isGeometryVariable(variable) ||
                 variable == "?image" || variable == "?flag" || variable.endsWith("_image")) return;
 
             // Take the variable name as one table column and the result value as
@@ -105,8 +105,7 @@ function openPopup(data) {
                         "<td>" + value + "</td></tr>");
         })
             let popup_html = "<table class=\"popup\">" + popup_content_strings.join("\n") + "</table>";
-            popup_html += '<a class="export-link" href="geojson?gid=' + data[0].id + "&layer=" + data[0].geomfield + "&id=" + sessionId + '&rad=0&export=1">Export as GeoJSON</a>';
-
+            popup_html += '<a class="export-link" href="' + getWfsExportUrl(data[0]) + '">Export via WFS</a>';
             if (curGeojson) curGeojson.remove();
 
             L.popup({"maxWidth" : 600})
@@ -124,7 +123,32 @@ function openPopup(data) {
         curGeojson.addTo(map);
     }
 }
-
+function isGeometryVariable(variable) {
+    return variable == "?geometry" ||
+           variable == "?geom" ||
+           variable == "?wkt" ||
+           variable.endsWith("_geometry") ||
+           variable.endsWith("_geom") ||
+           variable.endsWith("_wkt"); 
+}
+function popupAttributePriority(variable) {
+    if (variable == "?country") return 0;
+    if (variable == "?countryLabel" || variable == "?countryName") return 1;
+    if (variable == "?name" || variable == "?label" || variable == "?placelabel") return 2;
+    return 10;
+}
+function getWfsExportUrl(feature) {
+    const params = new URLSearchParams({
+        service: "WFS",
+        version: "2.0.0",
+        request: "GetFeature",
+        typeNames: "session_" + sessionId,
+        geomfield: feature.geomfield,
+        gid: feature.id,
+        outputFormat: "application/json"
+    });
+    return "wfs?" + params.toString();
+}
 function wfsFeatureCollectionToPopupData(data) {
     if (!data || data.type !== "FeatureCollection" || !data.features || data.features.length == 0) {
         return [];
@@ -134,8 +158,10 @@ function wfsFeatureCollectionToPopupData(data) {
     const props = feature.properties || {};
 
     const attrs = Object.keys(props)
-        .filter(key => !["id", "geomfield", "popup_lat", "popup_lng"].includes(key))
-        .map(key => [key, String(props[key])]);
+        .filter(key => !["id", "gid", "featureID", "geomfield", "popup_lat", "popup_lng"].includes(key))
+        .filter(key => !isGeometryVariable(key))
+        .map(key => [key, String(props[key])])
+        .sort((a, b) => popupAttributePriority(a[0]) - popupAttributePriority(b[0]));
     return [{
         id: props.id,
         geomfield: props.geomfield,

@@ -50,6 +50,7 @@ class Server : public util::http::Handler {
                                   const HeaderParams& headerPars,
                                   int sock) const;
   util::http::Answer handleWFSGetCapabilitiesReq(const Params& pars) const;
+  util::http::Answer handleWFSDescribeFeatureTypeReq(const Params& pars) const;
   util::http::Answer handleWFSGetFeatureReq(const Params& pars,
                                             const HeaderParams& headerPars,
                                             int sock) const;
