@@ -105,8 +105,9 @@ function openPopup(data) {
                         "<td>" + value + "</td></tr>");
         })
             let popup_html = "<table class=\"popup\">" + popup_content_strings.join("\n") + "</table>";
-            popup_html += '<a class="export-link" href="' + getWfsExportUrl(data[0]) + '">Export via WFS</a>';
+            popup_html += '<a class="export-link" href="' + getWfsExportUrl(data[0]) + '">Export via GeoJSON</a>';
             if (curGeojson) curGeojson.remove();
+
 
             L.popup({"maxWidth" : 600})
                 .setLatLng(data[0]["ll"])
@@ -145,7 +146,8 @@ function getWfsExportUrl(feature) {
         typeNames: "session_" + sessionId,
         geomfield: feature.geomfield,
         gid: feature.id,
-        outputFormat: "application/json"
+        outputFormat: "application/json",
+        export: 1
     });
     return "wfs?" + params.toString();
 }
@@ -243,7 +245,7 @@ function getLayer(id, layer, autoThreshold) {
             ? "heatmap-" + layer["colorscheme"]
             : "objects-" + layer["color"];
 
-        const autoHeatmapLayer = trackTmsStyle(L.nonTiledLayer.wms('heatmap', {
+        const autoHeatmapLayer = trackTileStyle(L.nonTiledLayer.wms('heatmap', {
             minZoom: 0,
             maxZoom: 15,
             opacity: layer["numobjects"] > autoThreshold ? 0.8 : 0.9,
@@ -253,23 +255,23 @@ function getLayer(id, layer, autoThreshold) {
             transparent: true,
         }), layerId, autoHeatmapRenderStyle);
 
-        const autoObjectTmsStyle = "objects-" + layer["color"];
+        const autoObjectRenderStyle = "objects-" + layer["color"];
 
-        const autoObjectLayer = trackTmsStyle(L.nonTiledLayer.wms('heatmap', {
+        const autoObjectLayer = trackTileStyle(L.nonTiledLayer.wms('heatmap', {
             minZoom: 16,
             maxZoom: 19,
             opacity: 0.9,
             layers: layerId,
-            styles: [autoObjectTmsStyle],
+            styles: [autoObjectRenderStyle],
             format: 'image/png'
-        }), layerId, autoObjectTmsStyle);
+        }), layerId, autoObjectRenderStyle);
 
         return  { name: layer["name"], layer: L.layerGroup([autoHeatmapLayer, autoObjectLayer])};
     } else if (layer["style"] == "raster") {
         const layerId = id + "-" + layer["geomfield"];
         const renderStyle = "raster-" + layer["rasterw"]
                     + "x" + layer["rasterh"] + "-" + layer["colorscheme"];
-        return  { name: layer["name"], layer: trackTmsStyle(L.nonTiledLayer.wms('heatmap', {
+        return  { name: layer["name"], layer: trackTileStyle(L.nonTiledLayer.wms('heatmap', {
             minZoom: 0,
             maxZoom: 19,
             opacity: 0.8,
@@ -283,7 +285,7 @@ function getLayer(id, layer, autoThreshold) {
     } else if (layer["style"] == "heatmap") {
         const layerId = id + "-" + layer["geomfield"];
         const renderStyle = "heatmap-" + layer["colorscheme"];
-        return { name: layer["name"], layer: trackTmsStyle(L.nonTiledLayer.wms('heatmap', {
+        return { name: layer["name"], layer: trackTileStyle(L.nonTiledLayer.wms('heatmap', {
             minZoom: 0,
             maxZoom: 19,
             opacity: 0.8,
@@ -295,7 +297,7 @@ function getLayer(id, layer, autoThreshold) {
     } else {
         const layerId = id + "-" + layer["geomfield"];
         const renderStyle = "objects-" + layer["color"];
-        return { name: layer["name"], layer: trackTmsStyle(L.nonTiledLayer.wms('heatmap', {
+        return { name: layer["name"], layer: trackTileStyle(L.nonTiledLayer.wms('heatmap', {
             minZoom: 0,
             maxZoom: 19,
             opacity: 0.9,
@@ -436,7 +438,7 @@ function loadSimpleMap(id, numObjects, autoThreshold, layer) {
         const renderStyle = "heatmap-" + s;
         heatmapLayers.push({
             name: s,
-            layer: trackTmsStyle(L.nonTiledLayer.wms('heatmap', {
+            layer: trackTileStyle(L.nonTiledLayer.wms('heatmap', {
                 minZoom: 0,
                 maxZoom: 19,
                 opacity: 0.8,
@@ -450,7 +452,7 @@ function loadSimpleMap(id, numObjects, autoThreshold, layer) {
     }
 
     const objectsStyle = "objects-" + layer["color"];
-    const objectsLayer = trackTmsStyle(L.nonTiledLayer.wms('heatmap', {
+    const objectsLayer = trackTileStyle(L.nonTiledLayer.wms('heatmap', {
         minZoom: 0,
         maxZoom: 19,
         opacity: 0.9,
@@ -462,7 +464,7 @@ function loadSimpleMap(id, numObjects, autoThreshold, layer) {
     const autoHeatmapRenderStyle = numObjects > autoThreshold 
         ? "heatmap-spectralexp" 
         : "objects-" + layer["color"];
-    const autoHeatmapLayer = trackTmsStyle(L.nonTiledLayer.wms('heatmap', {
+    const autoHeatmapLayer = trackTileStyle(L.nonTiledLayer.wms('heatmap', {
         minZoom: 0,
         maxZoom: 15,
         opacity: numObjects > autoThreshold ? 0.8 : 0.9,
@@ -473,7 +475,7 @@ function loadSimpleMap(id, numObjects, autoThreshold, layer) {
     }), layerId, autoHeatmapRenderStyle);
 
     const autoObjectRenderStyle = "objects-" + layer["color"];
-    const autoObjectLayer = trackTmsStyle(L.nonTiledLayer.wms('heatmap', {
+    const autoObjectLayer = trackTileStyle(L.nonTiledLayer.wms('heatmap', {
         minZoom: 16,
         maxZoom: 19,
         opacity: 0.9,
@@ -569,35 +571,51 @@ function _onLayerLoad(e) {
     document.getElementById("msg").style.display = "none";
 }
 
-function getVisibleTmsLayerId(layerId) {
+function getVisibleTileLayerId(layerId) {
     return layerId.replace(/-([?$])/, "-");
 }
 
-function buildTmsUrl() {
+function buildTileExportUrls() {
     if (!sessionId || !currentTileConfig) return null;
     
-    const layerId = encodeURIComponent(getVisibleTmsLayerId(currentTileConfig.layerId));
+    const visibleLayerId = getVisibleTileLayerId(currentTileConfig.layerId);
+    const layerId = encodeURIComponent(visibleLayerId);
     const style = encodeURIComponent(currentTileConfig.style);
-    
-    return `${window.location.origin}/tms/${layerId}/${style}/{x}/{y}/{z}.png`;
+    const wfsTypeName = encodeURIComponent("session_" + sessionId);
+    const geomField = encodeURIComponent(visibleLayerId.substring(sessionId.length + 1));
+
+    const bounds = map.getBounds();
+    const west = bounds.getWest();
+    const south = bounds.getSouth();
+    const east = bounds.getEast();
+    const north = bounds.getNorth();
+    const bbox = encodeURIComponent(`${west},${south},${east},${north}`);
+
+    return {
+        tms: `${window.location.origin}/tms/${layerId}/${style}/{x}/{y}/{z}.png`,
+        wmts: `${window.location.origin}/wmts?service=WMTS&request=GetTile&version=1.0.0&layer=${layerId}&style=${style}&format=image/png&tilematrixset=WebMercatorQuad&tilematrix={z}&tilerow={y}&tilecol={x}`,
+        wfs: `${window.location.origin}/wfs?service=WFS&version=2.0.0&request=GetFeature&typeNames=${wfsTypeName}&geomfield=${geomField}&bbox=${bbox}&srsName=EPSG:4326&outputFormat=application/json&count=100`
+    };
 }
 
-function trackTmsStyle(layer, layerId, style) {
+function trackTileStyle(layer, layerId, style) {
     layer.on("add", function() {
         currentTileConfig = {layerId: layerId, style: style};
     });
     return layer;
 }
 
-function showTmsDialog(url, copied) {
-    document.getElementById("tms-code").textContent = url;
-    document.getElementById("tms-subtitle").textContent =
-        copied ? "Copied to clipboard" : "Copy failed - you can still copy it manually";
-    document.getElementById("tms-modal").style.display = "flex";
+function showTileDialog(urls) {
+    document.getElementById("tms-code").textContent = urls.tms;
+    document.getElementById("wmts-code").textContent = urls.wmts;
+    document.getElementById("wfs-code").textContent = urls.wfs;
+    document.getElementById("tile-subtitle").textContent =
+        "Choose which export URL to copy.";
+    document.getElementById("tile-modal").style.display = "flex";
 }
 
-function hideTmsDialog() {
-    document.getElementById("tms-modal").style.display = "none";
+function hideTileDialog() {
+    document.getElementById("tile-modal").style.display = "none";
 }
 
 document.getElementById("ex-geojson").onclick = function() {
@@ -622,30 +640,30 @@ document.getElementById("ex-csv").onclick = function() {
     a.click();
 }
 
-document.getElementById("ex-tms").onclick = async function() {
-    const tmsUrl = buildTmsUrl();
-    if (!tmsUrl) return;
-
-    try {
-        await navigator.clipboard.writeText(tmsUrl);
-        showTmsDialog(tmsUrl, true);
-    }
-    catch (e) {
-        showTmsDialog(tmsUrl, false);
-    }
+document.getElementById("ex-tile").onclick = function() {
+    const urls = buildTileExportUrls();
+    if (!urls) return;
+    showTileDialog(urls);
 }
 
-document.getElementById("tms-close").onclick = function() {
-    hideTmsDialog();
+document.getElementById("tile-close").onclick = function() {
+    hideTileDialog();
 }
 
-document.getElementById("tms-copy").onclick = async function() {
-    const url = document.getElementById("tms-code").textContent;
-    try {
-        await navigator.clipboard.writeText(url);
-        document.getElementById("tms-subtitle").textContent = "Copied to clipboard";
-    } catch (e) {
-        document.getElementById("tms-subtitle").textContent =
-            "Copy failed - please copy manually";
-    }
-}
+document.querySelectorAll(".tile-copy").forEach(function(button) {
+    button.onclick = async function() {
+        const targetId = button.getAttribute("data-copy-target");
+        const url = document.getElementById(targetId).textContent;
+
+        try {
+            await navigator.clipboard.writeText(url);
+            button.textContent = "Copied";
+            setTimeout(function() {
+                button.textContent = "Copy";
+            }, 1200);
+        } catch (e) {
+            document.getElementById("tile-subtitle").textContent = 
+                "Copy failed - please copy manually.";
+        }
+    };
+});

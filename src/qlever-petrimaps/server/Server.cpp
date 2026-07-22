@@ -1517,6 +1517,12 @@ util::http::Answer Server::handleWFSGetFeatureReq(
   answ.params["Content-Type"] = "application/json; charset=UTF-8";
   answ.params["Cache-Control"] = "no-cache";
 
+  const std::string* exportParam = getParamCaseInsensitive(pars, "export");
+  if (exportParam != nullptr && !exportParam->empty() &&
+      std::atoi(exportParam->c_str())) {
+    answ.params["Content-Disposition"] = "attachment;filename:\"export.json\"";
+  }
+
   return answ;
 }
 

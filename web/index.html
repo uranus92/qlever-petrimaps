@@ -20,7 +20,7 @@
       <main>
          <div id='m'></div>
 		 <div id='ex'>
-         <button id='ex-tms'>Export as TMS</button>
+         <button id='ex-tile'>Export as Tile</button>
          <button id='ex-csv'>Export as CSV</button>
          <button id='ex-tsv'>Export as TSV</button>
          <button id='ex-geojson'>Export as GeoJSON</button>
@@ -43,22 +43,42 @@
             </div>
          </div>
       </div>
-      <div id="tms-modal">
-         <div id="tms-card">
-            <div id="tms-title">TMS URL</div>
-            <div id="tms-subtitle">the following URL template has been copied to your clipboard:</div>
-            <pre id="tms-code"></pre>
-            <div id="tms-help">
-               Replace <code>{x}</code>, <code>{y}</code>, and <code>{z}</code> with tile
-               coordinates for the zoom level and area you want to request. For example,
-               these tiles are around Freiburg:
-               <code>4/5/3.png</code>, <code>8/10/4.png</code>,
-               <code>16/20/5.png</code>, <code>33/41/6.png</code>,
-               <code>66/83/7.png</code>, <code>534/667/10.png</code>.
+      <div id="tile-modal">
+         <div id="tile-card">
+            <div id="tile-title">Tile export URLs</div>
+            <div id="tile-subtitle">Choose which export URL to copy.</div>
+            
+            <div id="tile-url-list">
+               <div class="tile-url-row">
+                  <div class="tile-url-meta">
+                     <div class="tile-url-label">TMS</div>
+                     <div class="tile-url-desc">Raster tile template</div>
+                  </div>
+                  <pre id="tms-code" class="tile-url-code"></pre>
+                  <button class="tile-copy" data-copy-target="tms-code">Copy</button>
+               </div>
+
+               <div class="tile-url-row">
+                  <div class="tile-url-meta">
+                     <div class="tile-url-label">WMTS</div>
+                     <div class="tile-url-desc">OGC WMTS GetTile template</div>
+                  </div>
+                  <pre id="wmts-code" class="tile-url-code"></pre>
+                  <button class="tile-copy" data-copy-target="wmts-code">Copy</button>
+               </div>
+
+               <div class="tile-url-row">
+                  <div class="tile-url-meta">
+                     <div class="tile-url-label">WFS</div>
+                     <div class="tile-url-desc">OGC WFS GetFeature URL</div>
+                  </div>
+                  <pre id="wfs-code" class="tile-url-code"></pre>
+                  <button class="tile-copy" data-copy-target="wfs-code">Copy</button>
+               </div>
             </div>
-            <div id="tms-actions">
-               <button id="tms-copy">Copy again</button>
-               <button id="tms-close">Close</button>
+
+            <div id="tile-actions">
+               <button id="tile-close">Close</button>
             </div>
          </div>
       </div>
